@@ -381,9 +381,8 @@ def pegasus_generators(
     nonfabric = {
         (u, m - 1, k, z) for u in range(2) for k in range(10, 12) for z in range(m - 1)
     } | {(u, 0, k, z) for u in range(2) for k in range(2) for z in range(m - 1)}
-    fabric = {
-        c for c in product(range(2), range(m), range(12), range(m - 1))
-    }.difference(nonfabric)
+
+    fabric = set(product(range(2), range(m), range(12), range(m - 1))) - nonfabric
     pruned_generators = []
     for g in diagonal + odd_pairs:
         new = reduce_generator_by_node_set(g[0], node_set=fabric)
@@ -493,7 +492,7 @@ class AutomorphismComposite(ComposedSampler):
         seed: As passed to :func:`numpy.random.default_rng`.
 
         generators_listtuple: A set of permutations compatible with the child
-            strcture. A list where each element is a tuple of generator (dict)
+            structure. A list where each element is a tuple of generator (dict)
             and integer cycle length. This allows for uniform sampling of some
             graphs. If generators_listtuple is None (by default) a schreir_context
             is used.
