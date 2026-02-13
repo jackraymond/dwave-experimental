@@ -16,6 +16,7 @@ An example to show embedding for multicolor annealing.
 """
 
 import argparse
+from time import perf_counter
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -45,6 +46,7 @@ def main(
     detector_line: int = 0,
     source_line: int = 3,
     biclique_target_lines: set | None = None,
+    timeout: int = 20,
 ):
     """Examples of multicolor annealing.
 
@@ -77,12 +79,15 @@ def main(
             a biclique. The remaining lines are used as detectors.
             Subject to device yield limitations, a biclique of size
             up to K_{8,8} is possible. {2,3} by default.
+        timeout: A timeout in seconds for embedding search. Based on typical
+            yield-rate for current research QPUs most examples are designed
+            to successfully determine an embedding on this timescale
+            or shorter.
     Raises:
         ValueError: If the number of lines is less than 3, or
             if ``detector_line`` or ``source_line`` is not in
             range [0, ``num_lines``).
     """
-
     # when available, use feature-based search to default the solver.
     if use_client:
         qpu = DWaveSampler(solver=solver)
@@ -212,9 +217,128 @@ def main(
     draw_parallel_embeddings(T, embeddings=[emb], S=Tsub, node_color=node_color)
 
     # BEGIN ADDITION
-    print("What follows, how to do an embedded model (a square or cubic lattice)")
-    # Open boundary square lattice on Chimera. NB, L<=4 starts to look irregular.
+    print(
+        "Some experimental additions for square, cubic and square-octagonal are dropped in here, "
+        "per Juelich requests, and may later be formalized into polished examples."
+    )
 
+    print(
+        "Note that: specific regular embeddings are sought here for a particular pair of horizontal and vertical lines. "
+        "Gains can be made by trying different det/src pairs, and different regular or unconstrained constructions in "
+        "marginal cases."
+    )
+    # Extra placement hinting (that source verticals must go to target verticals, same for horizontals) is important, otherwise find_subgraph() takes impractically long at interesting scales
+    from dwave_networkx import zephyr_coordinates
+
+    linear_to_zephyr = zephyr_coordinates(
+        *qpu.properties["topology"]["shape"]
+    ).linear_to_zephyr
+
+    Tnode_to_tds_parity = {
+        k: v if v != "target" else f"target{linear_to_zephyr(k)[0]}"
+        for k, v in Tnode_to_tds.items()
+    }
+    # SQUARE OCTAONAL STUFF
+    print(
+        "The following relates to square-octagonal lattice (1:1 target) embedding, see also: https://www.nature.com/articles/s41586-018-0410-x for closely related Chimera-context visualizations (Figure S8)"
+    )
+
+    def make_square_octagonal(L=3, verbose=True):
+        """An L by L square octagonal by this generator has 2 (L-1)^2 tesselating
+        square and octagonal plaquettes on a 2d plane.
+
+
+        L = 2 case is tiled outwards horizontally and vertically as L increases.
+        .  _ _ _ _
+         _|_|_ _ _|
+        |_ _ _|_| .
+        """
+        upward_idxs = {
+            0: {4 * i for i in range(L + 1)}
+            | {4 * i + 3 for i in range(L)},  # even rows
+            1: {4 * i + 2 for i in range(L + 1)}
+            | {4 * i + 1 for i in range(L)},  # odd rows
+        }
+        nodelist = [
+            (i, j)
+            for i in range(2 * L - 1)
+            for j in range(4 * L - 2)
+            if not ((i == 0 and j == 4 * L - 3) or (i == 2 * L - 2 and j == 0))
+        ]
+        edgelist = [((i, j), (i, j + 1)) for i, j in nodelist] + [
+            ((i, j), (i + 1, j)) for i, j in nodelist if j in upward_idxs[i % 2]
+        ]
+
+        nodeset = set(nodelist)
+        edgelist = [
+            e for e in edgelist if e[1] in nodeset
+        ]  # remove boundary spanning edges
+        if verbose:
+            plt.figure(f"Square-Octagonal L={L} - generator")
+            nx.draw_networkx(nx.from_edgelist(edgelist), pos={n: n for n in nodelist})
+        return nx.from_edgelist(edgelist)
+
+    # Open boundary square-octagonal lattice:
+    for L in [2, 3, 4]:
+        S_t = make_square_octagonal(L=L, verbose=True)
+        # A regular scheme maps black/white (biparite) on grid to parity. Other schemes are possible (might allow edge case embedding improvement, but restriction makes reasoning and search easier.
+        # Sourcing/Detecting of every node might be possible, but the complete (find_subgraph) based search is slow in the first case.
+
+        detected_nodes = None  # Attempt all (some regular subsets are easier)
+        sourced_nodes = None  # Attempt all (some regular subsets are easier)
+        S_tds, Snode_to_tds = make_tds_graph(
+            S_t, sourced_nodes=sourced_nodes, detected_nodes=detected_nodes
+        )  # Larger sets of detected/sourced nodes are possible.
+
+        emb = find_subgraph(
+            S_t,
+            Tsub,
+            as_embedding=True,
+            timeout=timeout,
+        )  # Could try larger timeout in a hypothetical hard case.
+        if len(emb) > 0:
+            plt.figure(f"Square-Octagonal {L}x{L} target embedded")
+            draw_parallel_embeddings(T, embeddings=[emb], S=S_t, node_color=node_color)
+        else:
+            print(f"{L}x{L} lattice without S/D per chain not found by this scheme")
+            print(
+                "Note that, we anticipate an efficient embedding to follow the "
+                "regular scheme of scheme of https://www.nature.com/articles/s41586-018-0410-x"
+                "providing this information via edge and node colors to find_subgraph "
+                "may allow substantial decreases in find_subgraph search time (as done "
+                "in square lattice case."
+            )
+        t0 = perf_counter()
+        emb = find_subgraph(
+            S_tds,
+            T,
+            node_labels=(Snode_to_tds, Tnode_to_tds),
+            as_embedding=True,
+            timeout=timeout,
+        )  # Could try larger timeout in a hypothetical hard case.
+
+        if len(emb) > 0:
+            plt.figure(f"Square-Octagonal {L}x{L} embedded with source/detectors")
+            draw_parallel_embeddings(
+                T, embeddings=[emb], S=S_tds, node_color=node_color
+            )
+        elif perf_counter() - t0 < timeout:
+            print(
+                f"{L}x{L} square octagonal lattice with Sources/Detectors cannot be found by this scheme"
+            )
+        else:
+            print(
+                f"{L}x{L} square octagonal lattice with Sources/Detectors not found by this scheme with time<{timeout}s (try larger timeout or hint more)"
+            )
+        plt.show()
+
+    # Note that in principle we could do several square layers and connect them at the
+    # boundary to make a torus. However, we would not have enough sources and detectors
+    # in that case.
+
+    plt.show()
+    print("What follows, how to do an embedded model (a cubic lattice) [INCOMPLETE]")
+    # Basically, several square layers joined together:
     for L in [6, 7, 8]:
         embedding = {
             (x, y): ((x, y, 0, 0), (x, y, 1, 0)) for x in range(L) for y in range(L)
@@ -243,44 +367,37 @@ def main(
             (n1, n2) for (n1, n2) in edgelist_logical if n2[0] < L and n2[1] < L
         ]
         S_t = nx.from_edgelist(edgelist_square + list(embedding.values()))
-        emb_to_four_lines = find_subgraph(
-            S_t, Tsub, as_embedding=True, timeout=20
-        )  # Could try larger timeout in a hypothetical hard case.
-        if len(emb) > 0:
+        emb_to_four_lines = find_subgraph(S_t, Tsub, as_embedding=True, timeout=timeout)
+        if len(emb_to_four_lines) > 0:
             plt.figure(f"Square {L}x{L} embedded: no specific source/target assignment")
             draw_parallel_embeddings(
                 T, embeddings=[emb_to_four_lines], S=S_t, node_color=node_color
             )
         else:
-            print(f"Square {L}x{L} target-only square lattice embedding not found (by this scheme)")
+            print(
+                f"Square {L}x{L} target-only square lattice embedding not found (by this scheme)"
+            )
         # This assumes the 6 line scheme, first 3 lines are for vertical qubits, final 3 lines for horizontal qubits.
-        assert detector_line < 3 and source_line > 2, 
+        assert detector_line < 3 and source_line > 2
+        detected_nodes = [
+            n for n in S_t.nodes() if n[2] == 1
+        ]  # Horizontal qubits, connect to vertical detector line
+        sourced_nodes = [
+            n for n in S_t.nodes() if n[2] == 0
+        ]  # Vertical qubits, connect to horizontal source line
+
         S_tds, Snode_to_tds = make_tds_graph(
-            target_graph=S_t,
-            detected_nodes=[
-                n for n in S_t.nodes() if n[2] == 1
-            ],  # Horizontal qubits, connect to vertical detector line
-            sourced_nodes=[
-                n for n in S_t.nodes() if n[2] == 0
-            ],  # Vertical qubits, connect to horizontal source line
+            target_graph=S_t, detected_nodes=detected_nodes, sourced_nodes=sourced_nodes
         )
-        Snode_to_tds = {
+        Snode_to_tds_parity = {
             k: v if v != "target" else f"target{k[2]}" for k, v in Snode_to_tds.items()
-        }  # Extra placement hinting (that source verticals must go to target verticals, same for horizontals) is important, otherwise find_subgraph() takes impractically long at interesting scales
-        from dwave_networkx import zephyr_coordinates
-        linear_to_zephyr = zephyr_coordinates(
-            *qpu.properties["topology"]["shape"]
-        ).linear_to_zephyr
-        Tnode_to_tds = {
-            k: v if v != "target" else f"target{linear_to_zephyr(k)[0]}"
-            for k, v in Tnode_to_tds.items()
         }
         emb_to_six_lines = find_subgraph(
             S_tds,
             T,
-            node_labels=(Snode_to_tds, Tnode_to_tds),
+            node_labels=(Snode_to_tds_parity, Tnode_to_tds_parity),
             as_embedding=True,
-            timeout=20,
+            timeout=timeout,
         )  # Could try larger timeout in a hypothetical hard case.
         if len(emb_to_six_lines) > 0:
             plt.figure(f"Square {L}x{L} embedded with source/detector per 2-chain")
