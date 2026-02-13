@@ -78,6 +78,8 @@ def qubit_freezeout_alpha_phi(
         parameters. Note that defaults (by contrast) are determined based on
         published values for ``Advantage2_system1.3``.
 
+        >>> from dwave.experimental.shimming import qubit_freezeout_alpha_phi
+        ...
         >>> alpha_phi = qubit_freezeout_alpha_phi(
         ...     eff_temp_phi=0.198,
         ...     flux_associated_variance=1/1024,
@@ -233,12 +235,12 @@ def shim_flux_biases(
         >>> from dwave.system import DWaveSampler
         >>> from dwave.experimental.shimming import shim_flux_biases, qubit_freezeout_alpha_phi
         ...
-        >>> qpu = DWaveSampler()
-        >>> bqm = dimod.BQM.from_ising({q: 0 for q in qpu.nodelist}, {})
+        >>> qpu = DWaveSampler()        # doctest: +SKIP
+        >>> bqm = dimod.BQM.from_ising({q: 0 for q in qpu.nodelist}, {})    # doctest: +SKIP
         >>> alpha_phi = qubit_freezeout_alpha_phi()  # Unoptimized to the experiment, for demonstration purposes.
         >>> ls = [alpha_phi]*5
         >>> sp = {'num_reads': 2048, 'auto_scale': False}
-        >>> fb, fb_history, mag_history = shim_flux_biases(bqm,
+        >>> fb, fb_history, mag_history = shim_flux_biases(bqm,     # doctest: +SKIP
         ...     qpu,
         ...     sampling_params=sp,
         ...     learning_schedule=ls)
