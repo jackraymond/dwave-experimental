@@ -34,6 +34,8 @@ from dwave.experimental.multicolor_anneal import (
 from dwave_networkx import (
     draw_zephyr,
     draw_parallel_embeddings,
+    draw_chimera_embedding,
+    chimera_graph,
 )
 
 
@@ -209,6 +211,105 @@ def main(
     ]
     draw_parallel_embeddings(T, embeddings=[emb], S=Tsub, node_color=node_color)
 
+    # BEGIN ADDITION
+    print("What follows, how to do an embedded model (a square or cubic lattice)")
+    # Open boundary square lattice on Chimera. NB, L<=4 starts to look irregular.
+
+    for L in [6, 7, 8]:
+        embedding = {
+            (x, y): ((x, y, 0, 0), (x, y, 1, 0)) for x in range(L) for y in range(L)
+        }
+        subgraph_target = chimera_graph(
+            L, L, 4, coordinates=True
+        )  # Reduced scale for clearer visualization
+        plt.figure(f"Square {L}x{L}")
+        draw_chimera_embedding(subgraph_target, embedding, node_size=10 / L)
+        # Try embedding with find_subgraph and some time-out, hinting vertical -> vertical and horizontal -> horizontal can help.
+
+        def displace2d(n: tuple, orientation: int):
+            "Displace coordinate by row n[0] or column n[1]"
+            if orientation == 0:
+                return (n[0] + 1,) + n[1:]
+            else:
+                return (n[0],) + (n[1] + 1,) + n[2:]
+
+        edgelist_logical = [
+            (dimer[orientation], displace2d(dimer[orientation], orientation))
+            for dimer in embedding.values()
+            for orientation in [0, 1]
+        ]
+        # Delete (or wrap) boundary spanning:
+        edgelist_square = [
+            (n1, n2) for (n1, n2) in edgelist_logical if n2[0] < L and n2[1] < L
+        ]
+        S_t = nx.from_edgelist(edgelist_square + list(embedding.values()))
+        emb_to_four_lines = find_subgraph(
+            S_t, Tsub, as_embedding=True, timeout=20
+        )  # Could try larger in a hypothetical hard case.
+        if len(emb) > 0:
+            plt.figure(f"Square {L}x{L} embedded: no specific source/target assignment")
+            draw_parallel_embeddings(
+                T, embeddings=[emb_to_four_lines], S=S_t, node_color=node_color
+            )
+        else:
+            print("Square lattice target embedding not found (by this scheme)")
+        # This assumes the 6 line scheme, first 3 lines are for vertical qubits, final 3 lines for horizontal qubits.
+        S_tds_greedy = S_t.copy()  # shallow copy is fine
+        assert detector_line < 3 and source_line > 2
+        S_tds, Snode_to_tds = make_tds_graph(
+            target_graph=S_t,
+            detected_nodes=[
+                n for n in S_t.nodes() if n[2] == 1
+            ],  # Horizontal qubits, connect to vertical detector line
+            sourced_nodes=[
+                n for n in S_t.nodes() if n[2] == 0
+            ],  # Vertical qubits, connect to horizontal source line
+        )
+        Snode_to_tds = {
+            k: v if v != "target" else f"target{k[2]}" for k, v in Snode_to_tds.items()
+        }  # Extra placement hinting is important for reducing time.
+        from dwave_networkx import zephyr_coordinates
+
+        linear_to_zephyr = zephyr_coordinates(
+            *qpu.properties["topology"]["shape"]
+        ).linear_to_zephyr
+        Tnode_to_tds = {
+            k: v if v != "target" else f"target{linear_to_zephyr(k)[0]}"
+            for k, v in Tnode_to_tds.items()
+        }
+        emb_to_six_lines = find_subgraph(
+            S_tds,
+            T,
+            node_labels=(Snode_to_tds, Tnode_to_tds),
+            as_embedding=True,
+            timeout=10,
+        )
+        if len(emb_to_six_lines) > 0:
+            plt.figure(f"Square {L}x{L} embedded with source/detector per 2-chain")
+            draw_parallel_embeddings(
+                T, embeddings=[emb_to_six_lines], S=S_tds, node_color=node_color
+            )
+        else:
+            print(f"{L}x{L} lattice with S/D per chain not found by this scheme")
+    plt.show()
+    # Open (or periodic in z) cubic lattices on Chimera.
+    Lz = 3  # We stack up to 4-fold, could be less, cant be more (with 2-variable chains on Chimera):
+    for L in range(3, 5):
+        embedding = {
+            (x, y, z): ((x, y, 0, z), (x, y, 1, z))
+            for x in range(L)
+            for y in range(L)
+            for z in range(Lz)
+        }
+        # I've fixed the 3rd dimension to 2, can't be bigger than 2 with dimers
+        # Using 4-chains allows up to 3m/4 x 3m/4 x 8 on a defect free Zephyr[m]
+        target = chimera_graph(
+            L, L, 4, coordinates=True
+        )  # Reduced scale for visualization
+        plt.figure(f"Cubic {L}x{L}x{Lz}")
+        draw_chimera_embedding(target, embedding, node_size=10 / L)
+
+    ## END OF ADDITION
     m = 8
     print(
         "Embed a K_{m,m} on two lines, with detectors on the other four lines."
