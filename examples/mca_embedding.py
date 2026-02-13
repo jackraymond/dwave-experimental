@@ -245,17 +245,16 @@ def main(
         S_t = nx.from_edgelist(edgelist_square + list(embedding.values()))
         emb_to_four_lines = find_subgraph(
             S_t, Tsub, as_embedding=True, timeout=20
-        )  # Could try larger in a hypothetical hard case.
+        )  # Could try larger timeout in a hypothetical hard case.
         if len(emb) > 0:
             plt.figure(f"Square {L}x{L} embedded: no specific source/target assignment")
             draw_parallel_embeddings(
                 T, embeddings=[emb_to_four_lines], S=S_t, node_color=node_color
             )
         else:
-            print("Square lattice target embedding not found (by this scheme)")
+            print(f"Square {L}x{L} target-only square lattice embedding not found (by this scheme)")
         # This assumes the 6 line scheme, first 3 lines are for vertical qubits, final 3 lines for horizontal qubits.
-        S_tds_greedy = S_t.copy()  # shallow copy is fine
-        assert detector_line < 3 and source_line > 2
+        assert detector_line < 3 and source_line > 2, 
         S_tds, Snode_to_tds = make_tds_graph(
             target_graph=S_t,
             detected_nodes=[
@@ -267,9 +266,8 @@ def main(
         )
         Snode_to_tds = {
             k: v if v != "target" else f"target{k[2]}" for k, v in Snode_to_tds.items()
-        }  # Extra placement hinting is important for reducing time.
+        }  # Extra placement hinting (that source verticals must go to target verticals, same for horizontals) is important, otherwise find_subgraph() takes impractically long at interesting scales
         from dwave_networkx import zephyr_coordinates
-
         linear_to_zephyr = zephyr_coordinates(
             *qpu.properties["topology"]["shape"]
         ).linear_to_zephyr
@@ -282,8 +280,8 @@ def main(
             T,
             node_labels=(Snode_to_tds, Tnode_to_tds),
             as_embedding=True,
-            timeout=10,
-        )
+            timeout=20,
+        )  # Could try larger timeout in a hypothetical hard case.
         if len(emb_to_six_lines) > 0:
             plt.figure(f"Square {L}x{L} embedded with source/detector per 2-chain")
             draw_parallel_embeddings(
