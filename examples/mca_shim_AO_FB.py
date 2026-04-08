@@ -22,6 +22,8 @@ import pickle
 import pandas as pd
 import matplotlib.pyplot as plt
 import networkx as nx
+from dwave.experimental.shimming.flux_biases import shim_flux_biases
+from dwave.experimental.shimming.flux_biases import shim_tds_flux_biases
 import numpy as np
 from tqdm import tqdm
 
@@ -45,6 +47,7 @@ def _make_anneal_schedules(
     times: list[float] | tuple[float] = (0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0),
     line_detector: int = 0,
     line_source: int = 3,
+    use_common_bounds: bool = True,
 ):
     """Set annealing schedules suitable for Larmour precision.
 
@@ -57,8 +60,14 @@ def _make_anneal_schedules(
     if len(times) != 7 or np.min(np.diff(times)) < 2 * min_time_step:
         raise ValueError("Format assumes 7 times each separated by atleast 2 minStep")
 
-    maxCs = {line: exp_feature_info[line]["maxC"] for line in range(num_lines)}
-    minCs = {line: exp_feature_info[line]["minC"] for line in range(num_lines)}
+    if use_common_bounds:
+        maxC = min(exp_feature_info[line]["maxC"] for line in range(num_lines))
+        minC = max(exp_feature_info[line]["minC"] for line in range(num_lines))
+        maxCs = {line: maxC for line in range(num_lines)}
+        minCs = {line: minC for line in range(num_lines)}
+    else:
+        maxCs = {line: exp_feature_info[line]["maxC"] for line in range(num_lines)}
+        minCs = {line: exp_feature_info[line]["minC"] for line in range(num_lines)}
 
     anneal_schedules = [
         [
@@ -102,7 +111,7 @@ def _make_polarizing_schedules(
     sign_polarization: int = 1,
     times: list[float] | tuple[float] = (0.0, 1.0, 2.0, 6.0),
 ):
-    """Set polzarizing schedules suitable for Larmour precision.
+    """Set polarizing schedules suitable for Larmour precision.
 
     See documentation for Larmour precession example, the same
     schedule is used."""
@@ -327,6 +336,7 @@ def main(
     delay_min_fit: float | None = None,
     delay_max_fit: float | None = None,
     fn_schedule: str = "09-1317A-D_Advantage2_research1_4_annealing_schedule.xlsx",
+    shim_detector_and_target: bool = True,
 ):
     """Demonstrate t-d-s variability and mitigation strategies
 
@@ -610,12 +620,42 @@ def main(
             qpu_parameters["x_schedule_delays"][
                 line_detector
             ] = 0.1  # Documented limit.
-            flux_biases, flux_history, mag_history = shim_flux_biases(
-                bqm=bqm_embedded,
-                sampler=qpu,
-                sampling_params=qpu_parameters,
-                shimmed_variables=shimmed_variables,
+            bqm_td = bqm_embedded.copy()
+            bqm_td.fix_variables(
+                {
+                    n: 0
+                    for n in bqm_embedded.variables
+                    if line_assignments[n] == line_source
+                }
             )
+
+            if shim_detector_and_target:
+                shimmed_variables = {
+                    n
+                    for n in bqm_embedded.variables
+                    if qubit_to_Advantage2_annealing_line(n, zephyr_shape)
+                    != line_source
+                }
+                target_lines = set(range(num_lines)) - set([line_source, line_detector])
+                detector_lines = {line_detector}
+                flux_biases, flux_history, mag_history = shim_tds_flux_biases(
+                    bqm=bqm_td,  # bqm_embedded, #
+                    sampler=qpu,
+                    sampling_params=qpu_parameters,
+                    target_lines=target_lines,
+                    detector_lines=detector_lines,
+                    line_assignments=line_assignments,
+                    num_steps=60,
+                    shimmed_variables=shimmed_variables,
+                )
+            else:
+                flux_biases, flux_history, mag_history = shim_flux_biases(
+                    bqm=bqm_td,  # bqm_embedded,
+                    sampler=qpu,
+                    sampling_params=qpu_parameters,
+                    shimmed_variables=shimmed_variables,
+                )
+
             if use_cache:
                 os.makedirs(os.path.dirname(fn_cache), exist_ok=True)
                 with open(fn_cache, "wb") as f:

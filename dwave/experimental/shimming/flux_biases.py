@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import math
 from typing import Any, Optional, Iterable, Callable
 
@@ -108,6 +109,7 @@ def shim_flux_biases(
     beta_hypergradient: float = 0.4,
     num_steps: int = 10,
     alpha: Optional[float] = None,
+    inclusion_by_update: dict[Variable, list] = None,
 ) -> tuple[list[Bias], dict, dict]:
     r"""Return flux biases that minimize magnetization for symmetry-preserving
     experiments.
@@ -287,8 +289,14 @@ def shim_flux_biases(
         if hnonzero:
             bqm = bqm.copy()
         reverseanneal = "initial_state" in sampling_params
-        polarizedmca = "x_polarizing_schedules" in sampling_params and any(
-            v != 0 for wfm in sampling_params["x_polarizing_schedules"] for _, v in wfm
+        polarizedmca = (
+            sampling_params is not None
+            and "x_polarizing_schedules" in sampling_params
+            and any(
+                v != 0
+                for wfm in sampling_params["x_polarizing_schedules"]
+                for _, v in wfm
+            )
         )
     else:
         fbnonzero = hnonzero = reverseanneal = polarizedmca = False
@@ -359,10 +367,22 @@ def shim_flux_biases(
             # This can be included as part of the test evaluation (if required)
             break
 
+        if inclusion_by_update is None:
+            exp_av_mags = {
+                v: np.mean(mag_history[v][-num_experiments:]) for v in shimmed_variables
+            }
+        else:
+            exp_av_mags = {
+                v: np.mean(
+                    [
+                        mag_history[v][-num_experiments + i]
+                        for i in inclusion_by_update[v]
+                    ]
+                )
+                for v in shimmed_variables
+            }
         if use_hypergradient:
-            magnetizations = np.array(
-                [np.mean(mag_history[v][-num_experiments:]) for v in shimmed_variables]
-            )
+            magnetizations = np.array([exp_av_mags[v] for v in shimmed_variables])
             if step > 0:
                 norm = np.linalg.norm(magnetizations) * np.linalg.norm(last_mags)
                 if math.isclose(norm, 0):
@@ -380,10 +400,188 @@ def shim_flux_biases(
             alpha = learning_schedule[step]
 
         for v in shimmed_variables:
-            flux_biases[v] -= alpha * sum(mag_history[v][-num_experiments:])
+            flux_biases[v] -= alpha * exp_av_mags[v]
             flux_bias_history[v].append(flux_biases[v])
 
     if pop_fb:
         sampling_params["flux_biases"] = flux_biases
 
     return flux_biases, flux_bias_history, mag_history
+
+
+def shim_tds_flux_biases(
+    bqm: dimod.BinaryQuadraticModel,
+    sampler: dimod.Sampler,
+    target_lines: set,
+    detector_lines: set,
+    *,
+    line_assignments: dict,
+    sampling_params: dict[str, Any],
+    learning_schedule: Optional[Iterable[float]] = None,
+    convergence_test: Optional[Callable] = None,
+    symmetrize_experiments: bool = False,
+    beta_hypergradient: float = 0.4,
+    num_steps: int = 10,
+    alpha: Optional[float] = None,
+    shimmed_variables: Optional[Iterable[Variable]] = None,
+) -> tuple[list[Bias], dict, dict]:
+    """
+
+    Targets and detectors when paired 1:1 can act as complementary.
+
+    We assume flux_biases required for symmetric outcomes are independent of the anneal schedule.
+    We can measure the coupled system(s) of qubits alternating the role of detector.
+    Assuming d<mag_D>/dphi_D > -sign(J_SD) d<mag_D>/d phi_S > 0, we can pursue a pair-experiments and update
+    only detector qubit fluxes in each with a convergence guarantee.
+
+
+    """
+    if "x_anneal_schedules" not in sampling_params:
+        raise ValueError("x_anneal_schedules should be specified in sampling_params")
+    if shimmed_variables is None:
+        shimmed_variables = bqm.variables
+    num_lines = len(sampling_params["x_anneal_schedules"])
+    if len(target_lines) < 1 or not all(0 < t < num_lines for t in target_lines):
+        raise ValueError("target_lines should be a non-empty iterable of line indices")
+    x_anneal_schedules_reversed = deepcopy(sampling_params["x_anneal_schedules"])
+    dl = next(iter(detector_lines))
+    for line in target_lines:
+        x_anneal_schedules_reversed[line] = sampling_params["x_anneal_schedules"][dl]
+    tl = next(iter(target_lines))
+    for line in detector_lines:
+        x_anneal_schedules_reversed[line] = sampling_params["x_anneal_schedules"][tl]
+    inclusion_by_update = {
+        v: (0,) if line_assignments[v] in detector_lines else (1,)
+        for v in shimmed_variables
+    }
+    sampling_params_update = [
+        {"x_anneal_schedules": sampling_params["x_anneal_schedules"]},
+        {"x_anneal_schedules": x_anneal_schedules_reversed},
+    ]
+    return shim_flux_biases(
+        bqm,
+        sampler,
+        sampling_params=sampling_params,
+        learning_schedule=learning_schedule,
+        convergence_test=convergence_test,
+        symmetrize_experiments=symmetrize_experiments,
+        beta_hypergradient=beta_hypergradient,
+        num_steps=num_steps,
+        alpha=alpha,
+        sampling_params_updates=sampling_params_update,
+        inclusion_by_update=inclusion_by_update,
+        shimmed_variables=shimmed_variables,
+    )
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.path.append("../../../")
+    from examples.mca_shim_AO_FB import plot_shim
+    from dwave.system import DWaveSampler
+    from dwave.experimental.multicolor_anneal import get_properties
+    import matplotlib.pyplot as plt
+
+    print(
+        "Test source detector shimming. This module code can be moved to tests and examples after development"
+    )
+
+    qpu = DWaveSampler(solver="Advantage2_system1_x_internal")
+    zephyr_shape = qpu.properties["topology"]["shape"]
+    exp_feature_info = get_properties(qpu)
+    line_assignments = {
+        n: al_idx for al_idx, al in enumerate(exp_feature_info) for n in al["qubits"]
+    }
+    e = qpu.edgelist[0]
+    bqm = dimod.BinaryQuadraticModel("SPIN").from_ising({}, {e: -1})
+    detector_lines = {line_assignments[e[0]]}
+    target_lines = {line_assignments[e[1]]}
+
+    def _make_anneal_schedules(
+        exp_feature_info: list,
+        detector_lines: tuple,
+        target_lines: tuple,
+        source_lines: tuple | None = None,
+        target_c: float = 0.37,
+        times: list[float] | tuple[float] = (0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0),
+    ):
+        """Set annealing schedules suitable for Larmour precision.
+
+        See documentation for Larmour precession example, the same
+        schedule is used.
+        """
+
+        num_lines = len(exp_feature_info)
+        min_time_step = exp_feature_info[0]["minAnnealingTimeStep"]
+        if len(times) != 7 or np.min(np.diff(times)) < 2 * min_time_step:
+            raise ValueError(
+                "Format assumes 7 times each separated by atleast 2 minStep"
+            )
+
+        maxCs = {line: exp_feature_info[line]["maxC"] for line in range(num_lines)}
+        minCs = {line: exp_feature_info[line]["minC"] for line in range(num_lines)}
+        maxC = min(maxCs.values())
+        minC = max(minCs.values())
+        if source_lines is None:
+            source_lines = (
+                set(range(num_lines)) - set(detector_lines) - set(target_lines)
+            )
+        anneal_schedules = [
+            [
+                [times[0], 0.0],
+                [times[1], 0.0],
+                [times[2], 0.0],
+                [times[3], target_c],
+                [times[4], target_c],
+                [times[4] + min_time_step, target_c],
+                [times[5], target_c],
+                [times[6], 1.0],
+            ]
+        ] * num_lines
+        for line_source in source_lines:
+            anneal_schedules[line_source] = [
+                [times[0], 0.0],
+                [times[1], maxC],
+                [times[2], maxC],
+                [times[3], maxC],
+                [times[4], maxC],
+                [times[4] + min_time_step, minC],
+                [times[5], minC],
+                [times[6], 1.0],
+            ]
+        for line_detector in detector_lines:
+            anneal_schedules[line_detector] = [
+                [times[0], 0.0],
+                [times[1], minC],
+                [times[2], minC],
+                [times[3], minC],
+                [times[4], minC],
+                [times[4] + min_time_step, maxC],
+                [times[5], maxC],
+                [times[6], 1.0],
+            ]
+        return anneal_schedules
+
+    x_anneal_schedules = _make_anneal_schedules(
+        exp_feature_info, detector_lines=detector_lines, target_lines=target_lines
+    )
+
+    sampling_params = dict(
+        num_reads=500,
+        answer_mode="raw",
+        x_disable_filtering=True,
+        x_anneal_schedules=x_anneal_schedules,
+    )
+
+    flux_biases, flux_history, mag_history = shim_tds_flux_biases(
+        bqm,
+        qpu,
+        target_lines,
+        detector_lines,
+        sampling_params=sampling_params,
+        line_assignments=line_assignments,
+    )
+
+    plot_shim(mag_history, flux_history)
+    plt.show()
