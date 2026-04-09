@@ -93,8 +93,12 @@ def _make_anneal_schedules(
     ]
     if target_lines is None:
         target_lines = set(range(num_lines)) - source_lines - detector_lines
-    elif not target_lines.issubset(set(range(num_lines)) - source_lines - detector_lines):
-        raise ValueError("Target lines must be a subset of available lines excluding source and detector lines.")
+    elif not target_lines.issubset(
+        set(range(num_lines)) - source_lines - detector_lines
+    ):
+        raise ValueError(
+            "Target lines must be a subset of available lines excluding source and detector lines."
+        )
     for line in target_lines:
         anneal_schedules[line] = [
             [times[0], 0.0],
@@ -665,7 +669,7 @@ def main(
                 for n in bqm_embedded.variables
                 if qubit_to_Advantage2_annealing_line(n, zephyr_shape) in detector_lines
             }
-            
+
             for line in detector_lines:
                 qpu_parameters["x_schedule_delays"][line] = 0.1  # Documented limit.
             bqm_td = bqm_embedded.copy()

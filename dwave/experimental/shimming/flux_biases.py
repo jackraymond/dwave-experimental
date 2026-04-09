@@ -478,7 +478,7 @@ if __name__ == "__main__":
     import sys
 
     sys.path.append("../../../")
-    from examples.mca_shim_AO_FB import plot_shim
+    from examples.mca_shim_AO_FB import plot_shim, _make_anneal_schedules
     from dwave.system import DWaveSampler
     from dwave.experimental.multicolor_anneal import get_properties
     import matplotlib.pyplot as plt
@@ -498,71 +498,6 @@ if __name__ == "__main__":
     detector_lines = {line_assignments[e[0]]}
     target_lines = {line_assignments[e[1]]}
 
-    def _make_anneal_schedules(
-        exp_feature_info: list,
-        detector_lines: tuple,
-        target_lines: tuple,
-        source_lines: tuple | None = None,
-        target_c: float = 0.37,
-        times: list[float] | tuple[float] = (0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0),
-    ):
-        """Set annealing schedules suitable for Larmour precision.
-
-        See documentation for Larmour precession example, the same
-        schedule is used.
-        """
-
-        num_lines = len(exp_feature_info)
-        min_time_step = exp_feature_info[0]["minAnnealingTimeStep"]
-        if len(times) != 7 or np.min(np.diff(times)) < 2 * min_time_step:
-            raise ValueError(
-                "Format assumes 7 times each separated by atleast 2 minStep"
-            )
-
-        maxCs = {line: exp_feature_info[line]["maxC"] for line in range(num_lines)}
-        minCs = {line: exp_feature_info[line]["minC"] for line in range(num_lines)}
-        maxC = min(maxCs.values())
-        minC = max(minCs.values())
-        if source_lines is None:
-            source_lines = (
-                set(range(num_lines)) - set(detector_lines) - set(target_lines)
-            )
-        anneal_schedules = [
-            [
-                [times[0], 0.0],
-                [times[1], 0.0],
-                [times[2], 0.0],
-                [times[3], target_c],
-                [times[4], target_c],
-                [times[4] + min_time_step, target_c],
-                [times[5], target_c],
-                [times[6], 1.0],
-            ]
-        ] * num_lines
-        for line_source in source_lines:
-            anneal_schedules[line_source] = [
-                [times[0], 0.0],
-                [times[1], maxC],
-                [times[2], maxC],
-                [times[3], maxC],
-                [times[4], maxC],
-                [times[4] + min_time_step, minC],
-                [times[5], minC],
-                [times[6], 1.0],
-            ]
-        for line_detector in detector_lines:
-            anneal_schedules[line_detector] = [
-                [times[0], 0.0],
-                [times[1], minC],
-                [times[2], minC],
-                [times[3], minC],
-                [times[4], minC],
-                [times[4] + min_time_step, maxC],
-                [times[5], maxC],
-                [times[6], 1.0],
-            ]
-        return anneal_schedules
-
     x_anneal_schedules = _make_anneal_schedules(
         exp_feature_info, detector_lines=detector_lines, target_lines=target_lines
     )
@@ -576,10 +511,7 @@ if __name__ == "__main__":
 
     # Detector only method
     flux_biases, flux_history, mag_history = shim_flux_biases(
-        bqm,
-        qpu,
-        sampling_params=sampling_params,
-        shimmed_variables=[0]
+        bqm, qpu, sampling_params=sampling_params, shimmed_variables=[0]
     )
     plot_shim(mag_history, flux_history, label="Det. only")
     plt.show()
