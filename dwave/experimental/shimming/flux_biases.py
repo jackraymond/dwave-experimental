@@ -574,6 +574,17 @@ if __name__ == "__main__":
         x_anneal_schedules=x_anneal_schedules,
     )
 
+    # Detector only method
+    flux_biases, flux_history, mag_history = shim_flux_biases(
+        bqm,
+        qpu,
+        sampling_params=sampling_params,
+        shimmed_variables=[0]
+    )
+    plot_shim(mag_history, flux_history, label="Det. only")
+    plt.show()
+    plt.close()
+    # New method
     flux_biases, flux_history, mag_history = shim_tds_flux_biases(
         bqm,
         qpu,
@@ -582,6 +593,5 @@ if __name__ == "__main__":
         sampling_params=sampling_params,
         line_assignments=line_assignments,
     )
-
     plot_shim(mag_history, flux_history)
     plt.show()

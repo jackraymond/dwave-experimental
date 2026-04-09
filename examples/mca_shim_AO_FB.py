@@ -15,8 +15,9 @@
 An example to show embedding for multicolor annealing.
 """
 
-import os
 import argparse
+import os
+from typing import Iterable
 
 import pickle
 import pandas as pd
@@ -45,8 +46,9 @@ def _make_anneal_schedules(
     exp_feature_info: list,
     target_c: float = 0.37,
     times: list[float] | tuple[float] = (0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0),
-    line_detector: int = 0,
-    line_source: int = 3,
+    detector_lines: Iterable[int] = (0,),
+    source_lines: Iterable[int] = (3,),
+    target_lines: Iterable[int] | None = None,
     use_common_bounds: bool = True,
 ):
     """Set annealing schedules suitable for Larmour precision.
@@ -54,9 +56,12 @@ def _make_anneal_schedules(
     See documentation for Larmour precession example, the same
     schedule is used.
     """
-
+    source_lines = set(source_lines)
+    detector_lines = set(detector_lines)
     num_lines = len(exp_feature_info)
-    min_time_step = exp_feature_info[0]["minAnnealingTimeStep"]
+    min_time_step = max(
+        exp_feature_info[line]["minAnnealingTimeStep"] for line in range(num_lines)
+    )
     if len(times) != 7 or np.min(np.diff(times)) < 2 * min_time_step:
         raise ValueError("Format assumes 7 times each separated by atleast 2 minStep")
 
@@ -65,47 +70,70 @@ def _make_anneal_schedules(
         minC = max(exp_feature_info[line]["minC"] for line in range(num_lines))
         maxCs = {line: maxC for line in range(num_lines)}
         minCs = {line: minC for line in range(num_lines)}
+        min_time_steps = {line: min_time_step for line in range(num_lines)}
     else:
         maxCs = {line: exp_feature_info[line]["maxC"] for line in range(num_lines)}
         minCs = {line: exp_feature_info[line]["minC"] for line in range(num_lines)}
-
+        min_time_steps = {
+            line: exp_feature_info[line]["minAnnealingTimeStep"]
+            for line in range(num_lines)
+        }
+    # By default, lines are chosen to minimize interference
     anneal_schedules = [
         [
+            [times[0], minCs[line]],
+            [times[1], minCs[line]],
+            [times[2], minCs[line]],
+            [times[3], minCs[line]],
+            [times[4], minCs[line]],
+            [times[5], minCs[line]],
+            [times[6], 1.0],
+        ]
+        for line in range(num_lines)
+    ]
+    if target_lines is None:
+        target_lines = set(range(num_lines)) - source_lines - detector_lines
+    elif not target_lines.issubset(set(range(num_lines)) - source_lines - detector_lines):
+        raise ValueError("Target lines must be a subset of available lines excluding source and detector lines.")
+    for line in target_lines:
+        anneal_schedules[line] = [
             [times[0], 0.0],
             [times[1], 0.0],
             [times[2], 0.0],
             [times[3], target_c],
             [times[4], target_c],
-            [times[4] + min_time_step, target_c],
+            [times[4] + min_time_steps[line], target_c],
             [times[5], target_c],
             [times[6], 1.0],
         ]
-    ] * num_lines
-    anneal_schedules[line_source] = [
-        [times[0], 0.0],
-        [times[1], maxCs[line_source]],
-        [times[2], maxCs[line_source]],
-        [times[3], maxCs[line_source]],
-        [times[4], maxCs[line_source]],
-        [times[4] + min_time_step, minCs[line_source]],
-        [times[5], minCs[line_source]],
-        [times[6], 1.0],
-    ]
-    anneal_schedules[line_detector] = [
-        [times[0], 0.0],
-        [times[1], minCs[line_detector]],
-        [times[2], minCs[line_detector]],
-        [times[3], minCs[line_detector]],
-        [times[4], minCs[line_detector]],
-        [times[4] + min_time_step, maxCs[line_detector]],
-        [times[5], maxCs[line_detector]],
-        [times[6], 1.0],
-    ]
+
+    for line in source_lines:
+        anneal_schedules[line] = [
+            [times[0], 0.0],
+            [times[1], maxCs[line]],
+            [times[2], maxCs[line]],
+            [times[3], maxCs[line]],
+            [times[4], maxCs[line]],
+            [times[4] + min_time_steps[line], minCs[line]],
+            [times[5], minCs[line]],
+            [times[6], 1.0],
+        ]
+    for line in detector_lines:  # No delay relative to source.
+        anneal_schedules[line] = [
+            [times[0], 0.0],
+            [times[1], minCs[line]],
+            [times[2], minCs[line]],
+            [times[3], minCs[line]],
+            [times[4], minCs[line]],
+            [times[4] + min_time_steps[line], maxCs[line]],
+            [times[5], maxCs[line]],
+            [times[6], 1.0],
+        ]
     return anneal_schedules
 
 
 def _make_polarizing_schedules(
-    line_source: int,
+    source_lines: Iterable[int],
     num_lines: int = 6,
     *,
     sign_polarization: int = 1,
@@ -120,12 +148,13 @@ def _make_polarizing_schedules(
             "Expecting 2 unpolarized times, followed by two polarized times"
         )
     polarization_schedules = [[[t, 0] for t in times] for _ in range(num_lines)]
-    polarization_schedules[line_source] = [
-        [times[0], 1],
-        [times[1], 1],
-        [times[2], 0],
-        [times[3], 0],
-    ]
+    for line in source_lines:
+        polarization_schedules[line] = [
+            [times[0], sign_polarization],
+            [times[1], sign_polarization],
+            [times[2], 0],
+            [times[3], 0],
+        ]
     return polarization_schedules
 
 
@@ -224,7 +253,7 @@ def run_parallel_experiment(
     bqm: dimod.BinaryQuadraticModel,
     qpu_parameters: dict,
     delays: np.ndarray | list,
-    line_detector: int,
+    detector_lines: Iterable[int],
 ) -> np.ndarray:
     """Collect detector magnetization for a set of independent embeddings
 
@@ -235,7 +264,7 @@ def run_parallel_experiment(
         bqm: Binary Quadratic Model
         qpu_parameters: parameters passed to the QPU sampler.
         delays: detector x_schedule_delays
-        line_detector: detector line.
+        detector_lines: detector lines.
 
     Returns:
         A numpy array of detector magnetizations
@@ -243,7 +272,8 @@ def run_parallel_experiment(
     """
     mean_Z_detector = []
     for delay in tqdm(delays):
-        qpu_parameters["x_schedule_delays"][line_detector] = delay
+        for line in detector_lines:
+            qpu_parameters["x_schedule_delays"][line] = delay
         # Return as a list of samplesets, instead of aggregated:
         samplesets, _ = sampler.sample_multiple(
             [bqm] * len(sampler.embeddings), **qpu_parameters
@@ -262,6 +292,7 @@ def plot_shim(
     flux_history: dict,
     num_experiments: int = 1,
     fname: str | None = None,
+    label: str = "",
 ):
     """Plot the iterative flux_bias_shim process.
 
@@ -275,6 +306,7 @@ def plot_shim(
             be measured per step in flux_biases.
         fname: a filename to which to save data, mag or fb is prepended for
             the two plot types. By default no plots are created.
+        label: a label for the plots, used in legends.
     """
     mag_array = np.array(list(mag_history.values()))
     flux_array = np.array(list(flux_history.values()))
@@ -307,7 +339,7 @@ def plot_shim(
     else:
         plt.xlabel("Programming")
         if mag_array.shape[0] < 10:
-            plt.legend(flux_history.keys(), title="Qubit index")
+            plt.legend(flux_history.keys(), title=f"{label} Qubit index")
     plt.ylabel("Magnetization")
     if fname is not None:
         plt.savefig(f"mag_{fname}")
@@ -318,7 +350,7 @@ def plot_shim(
     plt.xlabel("Shim iteration")
     plt.ylabel("Flux bias ($\\Phi_0$)")
     if mag_array.shape[0] < 10:
-        plt.legend(flux_history.keys(), title="Qubit index")
+        plt.legend(flux_history.keys(), title=f"{label} Qubit index")
     if fname is not None:
         plt.savefig(f"fb_{fname}")
 
@@ -326,8 +358,8 @@ def plot_shim(
 def main(
     use_cache: bool = False,
     solver: dict | str | None = None,
-    line_detector: int = 0,
-    line_source: int = 3,
+    detector_lines: Iterable[int] = (0,),
+    source_lines: Iterable[int] = (3,),
     target_c: float = 0.37,
     no_flux_biases: bool = False,
     no_anneal_offsets: bool = False,
@@ -336,7 +368,8 @@ def main(
     delay_min_fit: float | None = None,
     delay_max_fit: float | None = None,
     fn_schedule: str = "09-1317A-D_Advantage2_research1_4_annealing_schedule.xlsx",
-    shim_detector_and_target: bool = True,
+    shim_detector_and_target: bool = False,
+    target_lines: set | None = None,
 ):
     """Demonstrate t-d-s variability and mitigation strategies
 
@@ -368,10 +401,10 @@ def main(
             running new jobs through the client.
         solver:
             Name of the solver, or dictionary of characteristics.
-        line_detector:
-            The integer index of the detector line.
-        line_source:
-            The integer index of the source line.
+        detector_lines:
+            The integer indices of the detector lines.
+        source_lines:
+            The integer indices of the source lines.
         target_c:
             normalized control bias at which the target qubits are held
         no_flux_biases:
@@ -398,11 +431,13 @@ def main(
         fn_schedule: A schedule file that is used to estimate an appropriate sampling interval for delay
             time and an appropriate scale for anneal_offset synchronization. This should be matched to the
             solver.
+        target_lines: The integer indices of the target lines. By default all lines not reserved for the source and detector are available as target lines, but this can be used to specify a subset of target lines for analysis.
+            By default all lines not reserved for the source and detector are available as target lines, but this can be used to specify a subset of target lines for analysis.
 
     Raises:
         ValueError: If the number of lines is less than 3, or
-        if the line_detector or line_source is not in
-            the range [0, num_lines)
+        if the detector_lines or source_lines are not
+        disjoint and in set(range(num_lines))
     """
     print(
         "A variety of plots are shown to demonstrate heuristic correction of "
@@ -419,6 +454,14 @@ def main(
         raise ValueError("Fit window exceeds data window")
     if delay_min_fit > delay_max_fit:
         raise ValueError("Fit window is empty")
+    if len(detector_lines) == 0 or len(source_lines) == 0:
+        raise ValueError("Must have at least one source and one detector line")
+    detector_lines = set(detector_lines)
+    source_lines = set(source_lines)
+
+    if detector_lines & source_lines:
+        raise ValueError("Detector and source lines must be disjoint")
+
     # Schedule based approximations, target_A and dA/dc are approximated.
     qpu_anneal_schedule = pd.read_excel(
         fn_schedule, sheet_name="Fast-Annealing Schedule"
@@ -484,17 +527,20 @@ def main(
         n: al_idx for al_idx, al in enumerate(exp_feature_info) for n in al["qubits"]
     }
     num_lines = len(exp_feature_info)
+    if target_lines is None:
+        target_lines = set(range(num_lines)) - set(source_lines) - set(detector_lines)
     cmap = plt.colormaps.get_cmap("plasma")
     line_color = [cmap(i / (num_lines - 1)) for i in range(num_lines)]
 
     x_anneal_schedules = _make_anneal_schedules(
         exp_feature_info,
-        line_source=line_source,
-        line_detector=line_detector,
+        source_lines=source_lines,
+        detector_lines=detector_lines,
+        target_lines=target_lines,
         target_c=target_c,
     )
     x_polarizing_schedules = _make_polarizing_schedules(
-        line_source=line_source, num_lines=num_lines
+        source_lines=source_lines, num_lines=num_lines
     )
     x_schedule_delays = [0.0] * num_lines
 
@@ -521,12 +567,14 @@ def main(
 
     def _target_assignments(n: int):
         line = line_assignments[n]
-        if line == line_detector:
+        if line in detector_lines:
             return "detector"
-        elif line == line_source:
+        elif line in source_lines:
             return "source"
-        else:
+        elif line in target_lines:
             return "target"
+        else:
+            return "unused"
 
     Tnode_to_tds = {n: _target_assignments(n) for n in qpu.nodelist}
     target_graph = nx.Graph()
@@ -536,6 +584,7 @@ def main(
     embs = find_multiple_embeddings(
         S, T, max_num_emb=None, embedder_kwargs=subgraph_kwargs, one_to_iterable=True
     )
+
     # Reorder by target line for ease of analysis:
     embs_by_line = {i: [] for i in range(num_lines)}
     for i, emb in enumerate(embs):
@@ -594,7 +643,9 @@ def main(
             " the limit of long delay."
         )
         print()
-        fn_cache = f"cache/FB_{solver}_D{line_detector}_S{line_source}_c{target_c}.npy"
+        fn_cache = (
+            f"cache/FB_{solver}_D{detector_lines}_S{source_lines}_c{target_c}.npy"
+        )
         if use_cache and os.path.isfile(fn_cache):
             with open(fn_cache, "rb") as f:
                 flux_biases, flux_history, mag_history = pickle.load(f)
@@ -609,23 +660,20 @@ def main(
                     for e, J in bqm.quadratic.items()
                 },
             )
-            # shimmed_variables = {n for n in bqm_embedded.variables if qubit_to_Advantage2_annealing_line(n, zephyr_shape) == line_detector}
             shimmed_variables = {
                 n
                 for n in bqm_embedded.variables
-                if qubit_to_Advantage2_annealing_line(n, zephyr_shape) == line_detector
+                if qubit_to_Advantage2_annealing_line(n, zephyr_shape) in detector_lines
             }
-            # assert set(bqm_embedded.variables).issubset(qpu.nodelist)  # Paranoia
-            # assert all(T.has_edge(*e) for e in bqm_embedded.quadratic)  # Paranoia
-            qpu_parameters["x_schedule_delays"][
-                line_detector
-            ] = 0.1  # Documented limit.
+            
+            for line in detector_lines:
+                qpu_parameters["x_schedule_delays"][line] = 0.1  # Documented limit.
             bqm_td = bqm_embedded.copy()
             bqm_td.fix_variables(
                 {
                     n: 0
                     for n in bqm_embedded.variables
-                    if line_assignments[n] == line_source
+                    if line_assignments[n] in source_lines
                 }
             )
 
@@ -634,12 +682,11 @@ def main(
                     n
                     for n in bqm_embedded.variables
                     if qubit_to_Advantage2_annealing_line(n, zephyr_shape)
-                    != line_source
+                    in target_lines
+                    or n in detector_lines
                 }
-                target_lines = set(range(num_lines)) - set([line_source, line_detector])
-                detector_lines = {line_detector}
                 flux_biases, flux_history, mag_history = shim_tds_flux_biases(
-                    bqm=bqm_td,  # bqm_embedded, #
+                    bqm=bqm_td,  # bqm_embedded,  #
                     sampler=qpu,
                     sampling_params=qpu_parameters,
                     target_lines=target_lines,
@@ -666,12 +713,12 @@ def main(
         shimstr = ""
     plt.show()
     print(f"Collect data for {len(embs)} parallel embeddings")
-    fn_cache = f"cache/{solver}_D{line_detector}_S{line_source}_c{target_c}_ti{delay_min}_tf{delay_max}{shimstr}.npy"
+    fn_cache = f"cache/{solver}_D{detector_lines}_S{source_lines}_c{target_c}_ti{delay_min}_tf{delay_max}{shimstr}.npy"
     if use_cache and os.path.isfile(fn_cache):
         mean_Z_detector = np.load(fn_cache)
     else:
         mean_Z_detector = run_parallel_experiment(
-            sampler, bqm, qpu_parameters, delays, line_detector
+            sampler, bqm, qpu_parameters, delays, detector_lines
         )
         if use_cache:
             os.makedirs(os.path.dirname(fn_cache), exist_ok=True)
@@ -697,18 +744,18 @@ def main(
 
     plt.figure()
     plt.title("Time series for several qubits using distinct target lines")
-    line_targets = set()
+    plotted_lines = set()
     for idx, emb in enumerate(embs):
         q = emb[0][0]
         line_target = qubit_to_Advantage2_annealing_line(q, zephyr_shape)
-        if line_target not in line_targets:
+        if line_target not in plotted_lines:
             plt.plot(
                 delays * 1000,
                 mean_Z_detector[:, idx],
                 color=line_color[line_target],
                 label=f"target line {line_target}",
             )
-            line_targets.add(line_target)
+            plotted_lines.add(line_target)
     plt.ylabel("Detector magnetizations")
     plt.xlabel("Detector delay, ns")
     plt.legend()
@@ -750,16 +797,16 @@ def main(
     lines_represented = set()
     for i, emb in enumerate(embs):
         q = emb[0][0]
-        line_target = qubit_to_Advantage2_annealing_line(q, zephyr_shape)
-        if line_target in lines_represented:
+        line = qubit_to_Advantage2_annealing_line(q, zephyr_shape)
+        if line in lines_represented:
             label = None
         else:
-            label = f"target-qubit line={line_target}"
-            lines_represented.add(line_target)
+            label = f"target-qubit line={line}"
+            lines_represented.add(line)
         plt.plot(
             frequencies[: ld // 2],
             psd[i, : ld // 2],
-            color=line_color[line_target],
+            color=line_color[line],
             label=label,
         )
     plt.plot(
@@ -781,7 +828,7 @@ def main(
         )  # Per embedding
 
         print("Collect data with anneal offset compensation of frequency variation")
-        fn_cache = f"cache/{solver}_D{line_detector}_S{line_source}_c{target_c}_ti{delay_min}_tf{delay_max}{shimstr}_AO{delay_min_fit}_{delay_max_fit}.npy"
+        fn_cache = f"cache/{solver}_D{detector_lines}_S{source_lines}_c{target_c}_ti{delay_min}_tf{delay_max}{shimstr}_AO{delay_min_fit}_{delay_max_fit}.npy"
         if use_cache and os.path.isfile(fn_cache):
             mean_Z_detector = np.load(fn_cache)
         else:
@@ -790,7 +837,7 @@ def main(
                     emb[0][0]
                 ] -= ao  # Apply correction to target on each embedding
             mean_Z_detector = run_parallel_experiment(
-                sampler, bqm, qpu_parameters, delays, line_detector
+                sampler, bqm, qpu_parameters, delays, detector_lines
             )
             if use_cache:
                 np.save(fn_cache, mean_Z_detector)
@@ -807,18 +854,18 @@ def main(
 
         plt.figure()
         plt.title("Time series after anneal_offsets")
-        line_targets = set()
+        plotted_lines = set()
         for i, emb in enumerate(embs):
             q = emb[0][0]
-            line_target = qubit_to_Advantage2_annealing_line(q, zephyr_shape)
-            if line_target not in line_targets:
+            line = qubit_to_Advantage2_annealing_line(q, zephyr_shape)
+            if line not in plotted_lines:
                 plt.plot(
                     delays * 1000,
                     mean_Z_detector[:, i],
-                    color=line_color[line_target],
-                    label=f"target line {line_target}",
+                    color=line_color[line],
+                    label=f"target line {line}",
                 )
-                line_targets.add(line_target)
+                plotted_lines.add(line)
         plt.ylabel("Detector magnetizations")
         plt.xlabel("Detector delay, ns")
         plt.legend()
@@ -849,8 +896,8 @@ def main(
         lines_represented = set()
         for i, emb in enumerate(embs):
             q = emb[0][0]
-            line_target = qubit_to_Advantage2_annealing_line(q, zephyr_shape)
-            if line_target in lines_represented:
+            line = qubit_to_Advantage2_annealing_line(q, zephyr_shape)
+            if line in lines_represented:
                 label = None
             else:
                 label = f"target-qubit line={line_target}"
@@ -973,14 +1020,20 @@ if __name__ == "__main__":
         action="store_true",
         help="Add this flag to omit the data analsis with anneal_offsets set",
     )
+    parser.add_argument(
+        "--line_target",
+        type=int,
+        help="Target line: by default all lines not reserved for the source and detector are available",
+        default=None,  #
+    )
 
     args = parser.parse_args()
 
     main(
         use_cache=args.use_cache,
         solver=args.solver_name,
-        line_detector=args.line_detector,
-        line_source=args.line_source,
+        detector_lines=(args.line_detector,),
+        source_lines=(args.line_source,),
         target_c=args.target_c,
         delay_min=args.delay_min,
         delay_max=args.delay_max,
@@ -988,4 +1041,5 @@ if __name__ == "__main__":
         delay_max_fit=args.delay_max_fit,
         no_anneal_offsets=args.no_anneal_offsets,
         no_flux_biases=args.no_flux_biases,
+        target_lines=(args.line_target,) if args.line_target is not None else None,
     )
