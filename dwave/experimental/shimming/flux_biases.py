@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import math
-from typing import Any, Optional, Iterable, Callable
+from typing import Any, Optional, Iterable, Callable, Literal
 
 import numpy as np
 
@@ -56,18 +56,15 @@ def qubit_freezeout_alpha_phi(
     remain a good approximation given weakly correlated spins.
 
     Args:
-        eff_temp_phi:
-            Effective (unitless) inverse temperature at freezeout. This
-            can be determined from current device parameters.
-        flux_associated_variance:
-            The expected variance of the magnetization (:math:`m`) due to flux
-            offset.
-        estimator_variance:
-            The expected variance in the magnetization estimate,
+        eff_temp_phi: Effective (unitless) inverse temperature at freezeout.
+            Can be determined from current device parameters.
+        flux_associated_variance: The expected variance of the magnetization
+            (:math:`m`) due to flux offset.
+        estimator_variance: The expected variance in the magnetization estimate,
             :math:`\frac{1-m^2}{\text{num_reads}}`.
-        flux_scale:
-            Conversion from units of :ref:`h <parameter_qpu_h>` to units of
-            :math:`\Phi` can be determined from published device parameters. See
+        unit_conversion: Conversion factor from units of
+            :ref:`h <parameter_qpu_h>` to units of :math:`\Phi`. Can be
+            determined from published device parameters. See
             :func:`~dwave.system.temperatures.h_to_fluxbias`.
     Returns:
         An appropriate scale for the learning rate, minimizing the expected
@@ -177,12 +174,12 @@ def shim_flux_biases(
             provided, prefactors are determined by a hypergradient-descent
             method parameterized by the ``alpha``, ``beta_hypergradient``, and
             ``num_steps`` arguments.
-        convergence_test: A callable that take the history of magnetizations and
-            flux biases as input, returning ``True`` to exit the search, and
+        convergence_test: A callable that takes the history of magnetizations
+            and flux biases as input, returning ``True`` to exit the search, and
             ``False`` otherwise. By default, all stages specified in the
             ``learning_schedule`` argument are completed.
-        symmetrize_experiments: If True, performs a test to determine symmetry
-            breaking in the experiment: a non-zero
+        symmetrize_experiments: If ``True``, performs a test to determine
+            symmetry breaking in the experiment: a non-zero
             :ref:`parameter_qpu_initial_state` for reverse anneal, non-zero
             :math:`h`, or non-zero :ref:`parameter_qpu_flux_biases` (on some
             unshimmed variables). If any of these are present, magnetization is
@@ -214,6 +211,13 @@ def shim_flux_biases(
             :func:`.qubit_freezeout_alpha_phi` function. By default, initialized
             using the :func:`.qubit_freezeout_alpha_phi` function. Ignored if
             you specify the ``learning_schedule`` argument.
+        inclusion_by_update: Maps each shimmed variable to a list of experiment
+            indices (within the combined ``sampling_params_updates`` ×
+            signed-experiment product) whose magnetization values are averaged
+            for that variable's gradient update. By default all experiments in
+            the current step are averaged uniformly.
+            THIS ARGUMENT REQUIRES TESTS.
+
     Returns:
         A tuple consisting of 3 parts:
             1.  Flux biases in a list using the :ref:`parameter_qpu_flux_biases`
@@ -409,6 +413,128 @@ def shim_flux_biases(
     return flux_biases, flux_bias_history, mag_history
 
 
+def once_iterated_tanh_fit(
+    bqm: dimod.BinaryQuadraticModel,
+    sampler: dimod.Sampler,
+    sampling_params: dict[str, Any],
+    sampling_params_updates: list[dict[str, Any]],
+    inclusion_by_update: dict[Variable, tuple[int, ...]],
+    num_programmings: int = 10,
+    basis_points: np.ndarray = np.linspace(-2e-4, 2e-4, 11),
+    iterate: bool = True,
+    verbose: bool = True,
+    update_sampling_params: bool = True,
+) -> list[Bias]:
+    """Estimate flux-bias offsets by fitting a tanh curve to magnetization data.
+
+    THIS METHOD IS EXPERIMENTAL AND LACKS PROPER TESTING.
+
+    For each experimental setting in ``sampling_params_updates``, this function
+    sweeps over ``basis_points``, collects magnetization data across
+    ``num_programmings`` QPU programmings, and fits a tanh function
+    :math:`m = \\tanh(p_1 (\\Phi - p_0))` to the resulting
+    magnetization-versus-flux-bias curve. The fitted offset :math:`p_0`
+    corresponds to the flux value that drives the mean magnetization to zero.
+    When ``iterate`` is ``True``, each shimmed variable's flux bias is updated
+    to the fitted :math:`p_0`.
+
+    Unlike :func:`shim_flux_biases`, which uses iterative gradient descent,
+    this approach estimates the correction in a single pass over the basis
+    points, making it useful as an initial condition or a cross-check.
+
+    Args:
+        bqm: A :class:`~dimod.binary.BinaryQuadraticModel` describing the
+            problem. This should include only detector and target qubits.
+        sampler: A :class:`~dwave.system.samplers.DWaveSampler`.
+        sampling_params: Base sampling parameters passed to the sampler.
+            Updated in place for each entry in ``sampling_params_updates``.
+            This should not include flux_biases. If this includes flux_biases,
+            those values are taken as a baseline.
+        sampling_params_updates: A list of dictionaries; each dictionary is
+            applied as an update to ``sampling_params`` before collecting data
+            for that experimental setting. These two updates are expected to
+            swap the x_annealing_lines between detectors and targets. 
+        inclusion_by_update: Maps each shimmed variable to a tuple of update
+            indices (into ``sampling_params_updates``) from which its
+            magnetization data is drawn.
+        num_programmings: Number of independent QPU programmings per basis
+            point. Averaging over programmings reduces programming-induced
+            noise. Default is 10.
+        basis_points: An array of flux-bias values used as the independent
+            variable for the tanh fit. Default spans
+            :math:`[-2 \\times 10^{-4},\\, 2 \\times 10^{-4}]` in 11 steps.
+        iterate: If ``True``, updates each variable's entry in ``flux_biases``
+            to the fitted tanh center :math:`p_0`.  Set to ``False`` to perform
+            the scan and fit without modifying the flux biases.
+        flux_biases: Initial flux-bias list (one entry per physical qubit).
+            If ``None``, all biases are initialised to zero.
+        verbose: If ``True``, plots the tanh fits and data points for each
+            detected variable.
+        update_sampling_params: If ``True``, updates the ``sampling_params`` 
+            dictionary with the final flux biases under the "flux_biases" key.
+    Returns:
+        Flux biases in the :ref:`parameter_qpu_flux_biases` format, updated
+        with the fitted offsets when ``iterate`` is ``True``.
+    """
+    from scipy.optimize import curve_fit
+    _flux_biases = sampling_params.pop("flux_biases", None)
+    
+    if _flux_biases is None:
+        flux_biases = [0.0] * sampler.properties["num_qubits"]
+    else:
+        flux_biases = _flux_biases.copy()  
+    for idx_spu, spu in enumerate(sampling_params_updates):
+        mags = {}
+        sampling_params.update(spu)
+
+        flux_biases_perturbed = flux_biases.copy()
+
+        detected_variables = {
+            k for k, v in inclusion_by_update.items() if v[0] == idx_spu
+        }
+        for fb in basis_points:
+            for v in detected_variables:
+                flux_biases_perturbed[v] = flux_biases[v]
+            for p in range(num_programmings):
+                ss = sampler.sample(
+                    bqm, **sampling_params, flux_biases=flux_biases_perturbed
+                )
+                for idx_v, v in enumerate(ss.variables):
+                    mags[(fb, p, v)] = np.sum(
+                        ss.record.num_occurrences * ss.record.sample[:, idx_v]
+                    ) / np.sum(ss.record.num_occurrences)
+        
+
+        def f_tanh(x, p0, p1):
+            return np.tanh(p1 * (x - p0))
+
+        for v in detected_variables:
+            xdata = basis_points
+            ydata = [
+                np.mean([mags[(fb, p, v)] for p in range(num_programmings)])
+                for fb in basis_points
+            ]
+            p = curve_fit(f_tanh, xdata, ydata, p0=(0.0, 1e3))
+            if verbose:
+                plt.figure(f"{idx_spu}")
+                plt.plot(xdata, ydata, label=f"{v} {p[0][0]:.3g}")
+                plt.plot(xdata, f_tanh(xdata, *p[0]))
+                plt.legend()
+                plt.xlabel('Flux biases (Phi0)')
+                plt.ylabel('Magnetization (m)')
+            if iterate:
+                flux_biases[v] = p[0][0]
+       
+    if verbose:
+        plt.show()
+    if update_sampling_params:
+        sampling_params["flux_biases"] = flux_biases
+    elif _flux_biases is not None:
+        # reset to original flux biases
+        sampling_params["flux_biases"] = _flux_biases
+    return flux_biases
+
+
 def shim_tds_flux_biases(
     bqm: dimod.BinaryQuadraticModel,
     sampler: dimod.Sampler,
@@ -424,25 +550,87 @@ def shim_tds_flux_biases(
     num_steps: int = 10,
     alpha: Optional[float] = None,
     shimmed_variables: Optional[Iterable[Variable]] = None,
+    method: Literal['standard', 'Iterated tanh'] = "standard",
 ) -> tuple[list[Bias], dict, dict]:
-    """
+    """Shim flux biases using paired target and detector annealing lines.
 
-    Targets and detectors when paired 1:1 can act as complementary.
+    THIS METHOD IS EXPERIMENTAL AND LACKS PROPER TESTING.
+    
+    Targets and detectors when paired 1:1 can act as complementary
+    detectors. If we assume the required flux biases do not depend
+    on the waveform applied, then we can alternate the role of detector
+    and target, shimming only the detector flux to arrive at a unique
+    fixed point.
 
-    We assume flux_biases required for symmetric outcomes are independent of the anneal schedule.
-    We can measure the coupled system(s) of qubits alternating the role of detector.
-    Assuming d<mag_D>/dphi_D > -sign(J_SD) d<mag_D>/d phi_S > 0, we can pursue a pair-experiments and update
-    only detector qubit fluxes in each with a convergence guarantee.
+    We assume flux biases required for symmetric outcomes are independent
+    of the ``x_anneal_schedules``. We can measure the coupled system(s)
+    of qubits alternating the role of detector. Assuming
+    :math:`d\langle m_D\rangle/d\Phi_D > -\mathrm{sign}(J_{SD})\,d\langle m_D\rangle/d\Phi_S > 0`,
+    we can pursue paired experiments and update only detector qubit fluxes
+    in each with a convergence guarantee.
 
+    Args:
+        bqm: A :class:`~dimod.binary.BinaryQuadraticModel` describing the
+            coupled target–detector system.
+        sampler: A :class:`~dwave.system.samplers.DWaveSampler`.
+        target_lines: Indices of annealing lines whose qubits act as targets
+            (the system whose state we wish to measure).
+        detector_lines: Indices of annealing lines whose qubits act as
+            detectors (the qubits whose flux biases are shimmed).
+        line_assignments: Maps each variable (qubit index) to its annealing
+            line index.
+        sampling_params: Base sampling parameters passed to the sampler.
+            Must include ``x_anneal_schedules``.
+        learning_schedule: An iterable of gradient-descent prefactors for the
+            ``standard`` method. When not provided, the hypergradient-descent
+            method is used. Ignored for the ``Iterated tanh`` method.
+        convergence_test: A callable that takes the history of magnetizations
+            and flux biases and returns ``True`` to exit the search early.
+            Ignored for the ``Iterated tanh`` method.
+        symmetrize_experiments: If ``True``, symmetry-breaking elements in the
+            experiment are inverted for a second run and magnetizations are
+            averaged. Passed through to :func:`.shim_flux_biases` for the
+            ``standard`` method. Default is ``False``.
+        beta_hypergradient: Controls the learning-rate evolution for the
+            hypergradient-descent method. Supported values are in
+            :math:`(0, 1)`. Ignored when ``learning_schedule`` is provided or
+            ``method`` is not ``"standard"``.
+        num_steps: Number of gradient-descent steps for the ``standard``
+            method. Default is 10.
+        alpha: Initial learning rate for the hypergradient-descent method.
+            See :func:`.shim_flux_biases`. Ignored for the ``Iterated tanh``
+            method.
+        shimmed_variables: Variables to shim. Defaults to all variables in
+            ``bqm``.
+        method: Shimming algorithm to use. ``"standard"`` delegates to
+            :func:`.shim_flux_biases` with appropriately constructed
+            ``sampling_params_updates`` and ``inclusion_by_update``.
+            ``"Iterated tanh"`` uses :func:`.once_iterated_tanh_fit`.
+    Returns:
+        A tuple of three parts mirroring the return value of
+        :func:`.shim_flux_biases`:
 
+        1.  Flux biases in the :ref:`parameter_qpu_flux_biases` format
+            (``None`` for the ``"Iterated tanh"`` method).
+        2.  History of flux-bias assignments per shimmed component
+            (``None`` for the ``"Iterated tanh"`` method).
+        3.  History of magnetizations per shimmed component, or the
+            flux-bias list returned by :func:`.once_iterated_tanh_fit`.
     """
     if "x_anneal_schedules" not in sampling_params:
         raise ValueError("x_anneal_schedules should be specified in sampling_params")
+
+
     if shimmed_variables is None:
         shimmed_variables = bqm.variables
     num_lines = len(sampling_params["x_anneal_schedules"])
-    if len(target_lines) < 1 or not all(0 < t < num_lines for t in target_lines):
-        raise ValueError("target_lines should be a non-empty iterable of line indices")
+    if any(
+        len(lines) < 1 or not all(0 <= l < num_lines for l in lines)
+        for lines in [target_lines, detector_lines]
+    ):
+        raise ValueError(
+            "target_lines and detector_lines should be a non-empty iterable of line indices"
+        )
     x_anneal_schedules_reversed = deepcopy(sampling_params["x_anneal_schedules"])
     dl = next(iter(detector_lines))
     for line in target_lines:
@@ -458,20 +646,33 @@ def shim_tds_flux_biases(
         {"x_anneal_schedules": sampling_params["x_anneal_schedules"]},
         {"x_anneal_schedules": x_anneal_schedules_reversed},
     ]
-    return shim_flux_biases(
-        bqm,
-        sampler,
-        sampling_params=sampling_params,
-        learning_schedule=learning_schedule,
-        convergence_test=convergence_test,
-        symmetrize_experiments=symmetrize_experiments,
-        beta_hypergradient=beta_hypergradient,
-        num_steps=num_steps,
-        alpha=alpha,
-        sampling_params_updates=sampling_params_update,
-        inclusion_by_update=inclusion_by_update,
-        shimmed_variables=shimmed_variables,
-    )
+    if method == "standard":
+        return shim_flux_biases(
+            bqm,
+            sampler,
+            sampling_params=sampling_params,
+            learning_schedule=learning_schedule,
+            convergence_test=convergence_test,
+            symmetrize_experiments=symmetrize_experiments,
+            beta_hypergradient=beta_hypergradient,
+            num_steps=num_steps,
+            alpha=alpha,
+            sampling_params_updates=sampling_params_update,
+            inclusion_by_update=inclusion_by_update,
+            shimmed_variables=shimmed_variables,
+        )
+    else:
+        return (
+            None,
+            None,
+            once_iterated_tanh_fit(
+                bqm,
+                sampler,
+                sampling_params=sampling_params,
+                sampling_params_updates=sampling_params_update,
+                inclusion_by_update=inclusion_by_update,
+            ),
+        )
 
 
 if __name__ == "__main__":
@@ -486,21 +687,131 @@ if __name__ == "__main__":
     print(
         "Test source detector shimming. This module code can be moved to tests and examples after development"
     )
+    use_larmour_precession_documented_waveforms = (
+        True  # Set False for Majid's waveforms
+    )
+    method = "standard"  # Can switch to 'Iterated Tanh' for Majid's method
+    reference_test = (
+        1  # 1 is single edge (majid), 2 is 5 edges (majid), 0 is first QPU edge
+    )
+    solver = "Advantage2_prototype2_x_internal"
+    if reference_test > 0:
+        # A 2-stage tanh() fitting method using 11 basis points, 8 programmings per point, of 1000 reads yields
+        phi_qs = [(1.2600874e-05, 5.15008e-06)]
+        es = [
+            (1048, 1049),
+        ]
+        # sampling_params = These differ very slightly from my defaults, but not in a manner that should impact convergence.
+        # Success of the method requires weak dependence on the waveforms given s_target.
+        target_s = 0.292314
+        if reference_test > 1:
+            target_q = [1048, 400, 1024, 1023, 1028]
+            detector_q = [1049, 1101, 1025, 1029, 1022]
+            T_flux_offsets = [
+                1.2600874e-05,
+                -1.187981e-06,
+                -6.139937e-06,
+                -3.130485e-06,
+                -1.749384e-05,
+            ]
+            D_flux_offsets = [
+                5.15008e-06,
+                1.7151358e-05,
+                4.392779e-06,
+                -1.852948e-06,
+                7.622289e-06,
+            ]
+            es = [(v1, v2) for v1, v2 in zip(target_q, detector_q)]
 
-    qpu = DWaveSampler(solver="Advantage2_system1_x_internal")
+        def calc_anneal_schedules(
+            annealing_line_dicts, target_s, source_lines, target_lines, detector_lines
+        ):
+            """Majid's function"""
+            tar_schedule = [
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [2.0, target_s],
+                [8.0, target_s],
+                [25.0, target_s],
+            ]
+            if source_lines:
+                src_s_for_maxbeta = min(
+                    [annealing_line_dicts[i]["maxC"] for i in source_lines]
+                )  # 5.07
+                src_s_for_minbeta = max(
+                    [annealing_line_dicts[i]["minC"] for i in source_lines]
+                )
+                src_schedule = [
+                    [0.0, src_s_for_minbeta],
+                    [1.0, src_s_for_maxbeta],
+                    [21.0, src_s_for_maxbeta],
+                    [21.01, src_s_for_minbeta],
+                    [25.0, src_s_for_minbeta],
+                ]
+
+            det_s_for_maxbeta = min([ald["maxC"] for ald in annealing_line_dicts])
+            det_s_for_minbeta = max([ald["minC"] for ald in annealing_line_dicts])
+            det_schedule = [
+                [0.0, det_s_for_minbeta],
+                [10.0, det_s_for_minbeta],
+                [21.0, det_s_for_minbeta],
+                [21.01, det_s_for_maxbeta],
+                [25.0, det_s_for_maxbeta],
+            ]
+
+            do_nothing_schedule = [
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [2.0, 0.0],
+                [8.0, 0.0],
+                [25.0, 0.0],
+            ]
+
+            anneal_schedules = np.repeat(
+                np.array(do_nothing_schedule).reshape(1, 5, 2), 6, axis=0
+            )
+            for line in source_lines:
+                anneal_schedules[line] = src_schedule
+            for line in target_lines:
+                anneal_schedules[line] = tar_schedule
+            for line in detector_lines:
+                anneal_schedules[line] = det_schedule
+            return anneal_schedules
+
+    else:
+        target_s = None
+    qpu = DWaveSampler(solver="Advantage2_prototype2_x_internal")
     zephyr_shape = qpu.properties["topology"]["shape"]
     exp_feature_info = get_properties(qpu)
+
     line_assignments = {
         n: al_idx for al_idx, al in enumerate(exp_feature_info) for n in al["qubits"]
     }
-    e = qpu.edgelist[0]
-    bqm = dimod.BinaryQuadraticModel("SPIN").from_ising({}, {e: -1})
-    detector_lines = {line_assignments[e[0]]}
-    target_lines = {line_assignments[e[1]]}
-
-    x_anneal_schedules = _make_anneal_schedules(
-        exp_feature_info, detector_lines=detector_lines, target_lines=target_lines
+    if es is None:
+        es = qpu.edgelist[:1]
+    variables = sorted(v for e in es for v in e)
+    bqm = dimod.BinaryQuadraticModel("SPIN").from_ising(
+        {v: 0 for v in variables}, {e: -1 for e in es}
     )
+    detector_lines = {line_assignments[e[1]] for e in es}
+    target_lines = {line_assignments[e[0]] for e in es}
+    source_lines = {}  # Remaining lines are set to minC
+    if use_larmour_precession_documented_waveforms:
+        x_anneal_schedules = calc_anneal_schedules(
+            annealing_line_dicts=exp_feature_info,
+            target_s=target_s,
+            source_lines=source_lines,
+            target_lines=target_lines,
+            detector_lines=detector_lines,
+        )
+    else:
+        x_anneal_schedules = _make_anneal_schedules(
+            exp_feature_info,
+            detector_lines=detector_lines,
+            target_lines=target_lines,
+            source_lines=source_lines,
+            target_c=target_s,
+        )
 
     sampling_params = dict(
         num_reads=500,
@@ -511,11 +822,10 @@ if __name__ == "__main__":
 
     # Detector only method
     flux_biases, flux_history, mag_history = shim_flux_biases(
-        bqm, qpu, sampling_params=sampling_params, shimmed_variables=[0]
+        bqm, qpu, sampling_params=sampling_params, shimmed_variables=[e[1] for e in es]
     )
     plot_shim(mag_history, flux_history, label="Det. only")
-    plt.show()
-    plt.close()
+
     # New method
     flux_biases, flux_history, mag_history = shim_tds_flux_biases(
         bqm,
@@ -524,6 +834,10 @@ if __name__ == "__main__":
         detector_lines,
         sampling_params=sampling_params,
         line_assignments=line_assignments,
+        num_steps=40,
+        method=method,  ## Temporary parameter to test Majid's proposal
     )
     plot_shim(mag_history, flux_history)
+    plt.figure(2)
+    plt.legend()
     plt.show()

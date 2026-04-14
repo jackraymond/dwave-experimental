@@ -59,6 +59,13 @@ def _make_anneal_schedules(
     source_lines = set(source_lines)
     detector_lines = set(detector_lines)
     num_lines = len(exp_feature_info)
+
+    assert (
+        source_lines.isdisjoint(detector_lines)
+        and source_lines.issubset(set(range(num_lines)))
+        and detector_lines.issubset(set(range(num_lines)))
+    ), "Source and detector lines must be disjoint and valid line indices."
+
     min_time_step = max(
         exp_feature_info[line]["minAnnealingTimeStep"] for line in range(num_lines)
     )
@@ -297,6 +304,7 @@ def plot_shim(
     num_experiments: int = 1,
     fname: str | None = None,
     label: str = "",
+    max_qubit_labels: int = 10,
 ):
     """Plot the iterative flux_bias_shim process.
 
@@ -342,7 +350,7 @@ def plot_shim(
         plt.xlabel("Shim iteration")
     else:
         plt.xlabel("Programming")
-        if mag_array.shape[0] < 10:
+        if mag_array.shape[0] <= max_qubit_labels:
             plt.legend(flux_history.keys(), title=f"{label} Qubit index")
     plt.ylabel("Magnetization")
     if fname is not None:
@@ -353,7 +361,7 @@ def plot_shim(
     plt.plot(flux_array.transpose())
     plt.xlabel("Shim iteration")
     plt.ylabel("Flux bias ($\\Phi_0$)")
-    if mag_array.shape[0] < 10:
+    if mag_array.shape[0] <= max_qubit_labels:
         plt.legend(flux_history.keys(), title=f"{label} Qubit index")
     if fname is not None:
         plt.savefig(f"fb_{fname}")
@@ -643,7 +651,7 @@ def main(
     if not no_flux_biases:
         shimstr = "_FBshim"
         print(
-            "Shim detector and source flux biases for zero detector magnetization in"
+            "Shim flux biases for zero detector magnetization in"
             " the limit of long delay."
         )
         print()
@@ -1015,6 +1023,12 @@ if __name__ == "__main__":
         default=None,  # Matches delay_max by default
     )
     parser.add_argument(
+        "--line_target",
+        type=int,
+        help="Target line: by default all lines not reserved for the source and detector are available",
+        default=None,  #
+    )
+    parser.add_argument(
         "--no_flux_biases",
         action="store_true",
         help="Add this flag to omit the data analsis with anneal_offsets set",
@@ -1025,10 +1039,9 @@ if __name__ == "__main__":
         help="Add this flag to omit the data analsis with anneal_offsets set",
     )
     parser.add_argument(
-        "--line_target",
-        type=int,
-        help="Target line: by default all lines not reserved for the source and detector are available",
-        default=None,  #
+        "--shim_detector_and_target",
+        action="store_true",
+        help="Add this flag to shim both the detector and target lines (experimental implementation, not yet producing good outcomes)",
     )
 
     args = parser.parse_args()
@@ -1045,5 +1058,6 @@ if __name__ == "__main__":
         delay_max_fit=args.delay_max_fit,
         no_anneal_offsets=args.no_anneal_offsets,
         no_flux_biases=args.no_flux_biases,
-        target_lines=(args.line_target,) if args.line_target is not None else None,
+        target_lines={args.line_target} if args.line_target is not None else None,
+        shim_detector_and_target=args.shim_detector_and_target,
     )
