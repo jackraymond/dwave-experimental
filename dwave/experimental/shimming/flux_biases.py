@@ -453,7 +453,7 @@ def once_iterated_tanh_fit(
         sampling_params_updates: A list of dictionaries; each dictionary is
             applied as an update to ``sampling_params`` before collecting data
             for that experimental setting. These two updates are expected to
-            swap the x_annealing_lines between detectors and targets. 
+            swap the x_annealing_lines between detectors and targets.
         inclusion_by_update: Maps each shimmed variable to a tuple of update
             indices (into ``sampling_params_updates``) from which its
             magnetization data is drawn.
@@ -470,19 +470,20 @@ def once_iterated_tanh_fit(
             If ``None``, all biases are initialised to zero.
         verbose: If ``True``, plots the tanh fits and data points for each
             detected variable.
-        update_sampling_params: If ``True``, updates the ``sampling_params`` 
+        update_sampling_params: If ``True``, updates the ``sampling_params``
             dictionary with the final flux biases under the "flux_biases" key.
     Returns:
         Flux biases in the :ref:`parameter_qpu_flux_biases` format, updated
         with the fitted offsets when ``iterate`` is ``True``.
     """
     from scipy.optimize import curve_fit
+
     _flux_biases = sampling_params.pop("flux_biases", None)
-    
+
     if _flux_biases is None:
         flux_biases = [0.0] * sampler.properties["num_qubits"]
     else:
-        flux_biases = _flux_biases.copy()  
+        flux_biases = _flux_biases.copy()
     for idx_spu, spu in enumerate(sampling_params_updates):
         mags = {}
         sampling_params.update(spu)
@@ -503,7 +504,6 @@ def once_iterated_tanh_fit(
                     mags[(fb, p, v)] = np.sum(
                         ss.record.num_occurrences * ss.record.sample[:, idx_v]
                     ) / np.sum(ss.record.num_occurrences)
-        
 
         def f_tanh(x, p0, p1):
             return np.tanh(p1 * (x - p0))
@@ -520,11 +520,11 @@ def once_iterated_tanh_fit(
                 plt.plot(xdata, ydata, label=f"{v} {p[0][0]:.3g}")
                 plt.plot(xdata, f_tanh(xdata, *p[0]))
                 plt.legend()
-                plt.xlabel('Flux biases (Phi0)')
-                plt.ylabel('Magnetization (m)')
+                plt.xlabel("Flux biases (Phi0)")
+                plt.ylabel("Magnetization (m)")
             if iterate:
                 flux_biases[v] = p[0][0]
-       
+
     if verbose:
         plt.show()
     if update_sampling_params:
@@ -550,12 +550,12 @@ def shim_tds_flux_biases(
     num_steps: int = 10,
     alpha: Optional[float] = None,
     shimmed_variables: Optional[Iterable[Variable]] = None,
-    method: Literal['standard', 'Iterated tanh'] = "standard",
+    method: Literal["standard", "Iterated tanh"] = "standard",
 ) -> tuple[list[Bias], dict, dict]:
     """Shim flux biases using paired target and detector annealing lines.
 
     THIS METHOD IS EXPERIMENTAL AND LACKS PROPER TESTING.
-    
+
     Targets and detectors when paired 1:1 can act as complementary
     detectors. If we assume the required flux biases do not depend
     on the waveform applied, then we can alternate the role of detector
@@ -620,7 +620,6 @@ def shim_tds_flux_biases(
     if "x_anneal_schedules" not in sampling_params:
         raise ValueError("x_anneal_schedules should be specified in sampling_params")
 
-
     if shimmed_variables is None:
         shimmed_variables = bqm.variables
     num_lines = len(sampling_params["x_anneal_schedules"])
@@ -631,20 +630,30 @@ def shim_tds_flux_biases(
         raise ValueError(
             "target_lines and detector_lines should be a non-empty iterable of line indices"
         )
+    x_schedule_delays_reversed = deepcopy(sampling_params["x_schedule_delays"])
     x_anneal_schedules_reversed = deepcopy(sampling_params["x_anneal_schedules"])
     dl = next(iter(detector_lines))
     for line in target_lines:
+        x_schedule_delays_reversed[line] = sampling_params["x_schedule_delays"][dl]
         x_anneal_schedules_reversed[line] = sampling_params["x_anneal_schedules"][dl]
     tl = next(iter(target_lines))
     for line in detector_lines:
+        x_schedule_delays_reversed[line] = sampling_params["x_schedule_delays"][tl]
         x_anneal_schedules_reversed[line] = sampling_params["x_anneal_schedules"][tl]
+
     inclusion_by_update = {
         v: (0,) if line_assignments[v] in detector_lines else (1,)
         for v in shimmed_variables
     }
     sampling_params_update = [
-        {"x_anneal_schedules": sampling_params["x_anneal_schedules"]},
-        {"x_anneal_schedules": x_anneal_schedules_reversed},
+        {
+            "x_anneal_schedules": sampling_params["x_anneal_schedules"],
+            "x_schedule_delays": sampling_params["x_schedule_delays"],
+        },
+        {
+            "x_anneal_schedules": x_anneal_schedules_reversed,
+            "x_schedule_delays": x_schedule_delays_reversed,
+        },
     ]
     if method == "standard":
         return shim_flux_biases(

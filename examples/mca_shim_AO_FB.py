@@ -14,8 +14,9 @@
 """
 An example to show embedding for multicolor annealing.
 """
-
 import argparse
+import hashlib
+import json
 import os
 from typing import Iterable
 
@@ -40,6 +41,11 @@ from dwave.experimental.multicolor_anneal import (
     qubit_to_Advantage2_annealing_line,
 )
 from dwave.experimental.shimming import shim_flux_biases
+
+
+def _get_experiment_id(args):
+    args_string = json.dumps(vars(args), sort_keys=True)
+    return hashlib.sha256(args_string.encode("utf-8")).hexdigest()
 
 
 def _make_anneal_schedules(
@@ -368,7 +374,7 @@ def plot_shim(
 
 
 def main(
-    use_cache: bool = False,
+    cache_str: str | None = None,
     solver: dict | str | None = None,
     detector_lines: Iterable[int] = (0,),
     source_lines: Iterable[int] = (3,),
@@ -405,8 +411,8 @@ def main(
     maximized.
 
     Args:
-        use_cache:
-            Flag to enable caching of experimental data. If set to True a directory
+        cache_str:
+            A unique experimental idenfier. If not None a
             cache/ is created which is populated with experimental data. The cache
             is checked for compatible experimental data before running an experiment,
             and if compatible data is present the data is reloaded rather than
@@ -551,8 +557,18 @@ def main(
         target_lines=target_lines,
         target_c=target_c,
     )
+    x_anneal_schedules_fb = _make_anneal_schedules(
+        exp_feature_info,
+        source_lines={},
+        detector_lines=detector_lines,
+        target_lines=target_lines,
+        target_c=target_c,
+    )
     x_polarizing_schedules = _make_polarizing_schedules(
         source_lines=source_lines, num_lines=num_lines
+    )
+    x_polarizing_schedules_fb = _make_polarizing_schedules(
+        source_lines={}, num_lines=num_lines
     )
     x_schedule_delays = [0.0] * num_lines
 
@@ -592,10 +608,24 @@ def main(
     target_graph = nx.Graph()
     target_graph.add_node(0)
     S, Snode_to_tds = make_tds_graph(target_graph)
+
     subgraph_kwargs = dict(node_labels=(Snode_to_tds, Tnode_to_tds), as_embedding=True)
-    embs = find_multiple_embeddings(
-        S, T, max_num_emb=None, embedder_kwargs=subgraph_kwargs, one_to_iterable=True
-    )
+    fn_cache = f"cache/emb_{cache_str}.pkl"
+    if cache_str:
+        os.makedirs(os.path.dirname(fn_cache), exist_ok=True)
+    if cache_str and os.path.isfile(fn_cache):
+        with open(fn_cache, "rb") as f:
+            embs = pickle.load(f)
+    else:
+        embs = find_multiple_embeddings(
+            S,
+            T,
+            max_num_emb=None,
+            embedder_kwargs=subgraph_kwargs,
+            one_to_iterable=True,
+        )
+        with open(fn_cache, "wb") as f:
+            pickle.dump(embs, f)
 
     # Reorder by target line for ease of analysis:
     embs_by_line = {i: [] for i in range(num_lines)}
@@ -655,10 +685,8 @@ def main(
             " the limit of long delay."
         )
         print()
-        fn_cache = (
-            f"cache/FB_{solver}_D{detector_lines}_S{source_lines}_c{target_c}.npy"
-        )
-        if use_cache and os.path.isfile(fn_cache):
+        fn_cache = f"cache/FB_{cache_str}.npy"
+        if cache_str and os.path.isfile(fn_cache):
             with open(fn_cache, "rb") as f:
                 flux_biases, flux_history, mag_history = pickle.load(f)
         else:
@@ -688,6 +716,11 @@ def main(
                     if line_assignments[n] in source_lines
                 }
             )
+            qpu_parameters_fb = (
+                qpu_parameters.copy()
+            )  # NB, values replaced not modified
+            qpu_parameters_fb["x_anneal_schedules"] = x_anneal_schedules_fb
+            qpu_parameters_fb["x_polarizing_schedules"] = x_polarizing_schedules_fb
 
             if shim_detector_and_target:
                 shimmed_variables = {
@@ -700,7 +733,7 @@ def main(
                 flux_biases, flux_history, mag_history = shim_tds_flux_biases(
                     bqm=bqm_td,  # bqm_embedded,  #
                     sampler=qpu,
-                    sampling_params=qpu_parameters,
+                    sampling_params=qpu_parameters_fb,
                     target_lines=target_lines,
                     detector_lines=detector_lines,
                     line_assignments=line_assignments,
@@ -715,8 +748,7 @@ def main(
                     shimmed_variables=shimmed_variables,
                 )
 
-            if use_cache:
-                os.makedirs(os.path.dirname(fn_cache), exist_ok=True)
+            if cache_str:
                 with open(fn_cache, "wb") as f:
                     pickle.dump((flux_biases, flux_history, mag_history), f)
         plot_shim(mag_history, flux_history)
@@ -725,14 +757,14 @@ def main(
         shimstr = ""
     plt.show()
     print(f"Collect data for {len(embs)} parallel embeddings")
-    fn_cache = f"cache/{solver}_D{detector_lines}_S{source_lines}_c{target_c}_ti{delay_min}_tf{delay_max}{shimstr}.npy"
-    if use_cache and os.path.isfile(fn_cache):
+    fn_cache = f"cache/AO_It0_{cache_str}.npy"
+    if cache_str and os.path.isfile(fn_cache):
         mean_Z_detector = np.load(fn_cache)
     else:
         mean_Z_detector = run_parallel_experiment(
             sampler, bqm, qpu_parameters, delays, detector_lines
         )
-        if use_cache:
+        if cache_str:
             os.makedirs(os.path.dirname(fn_cache), exist_ok=True)
             np.save(fn_cache, mean_Z_detector)
 
@@ -840,8 +872,8 @@ def main(
         )  # Per embedding
 
         print("Collect data with anneal offset compensation of frequency variation")
-        fn_cache = f"cache/{solver}_D{detector_lines}_S{source_lines}_c{target_c}_ti{delay_min}_tf{delay_max}{shimstr}_AO{delay_min_fit}_{delay_max_fit}.npy"
-        if use_cache and os.path.isfile(fn_cache):
+        fn_cache = fn_cache = f"cache/AO_It1_{cache_str}.npy"
+        if cache_str and os.path.isfile(fn_cache):
             mean_Z_detector = np.load(fn_cache)
         else:
             for emb, ao in zip(embs, anneal_offsets):
@@ -851,7 +883,7 @@ def main(
             mean_Z_detector = run_parallel_experiment(
                 sampler, bqm, qpu_parameters, delays, detector_lines
             )
-            if use_cache:
+            if cache_str:
                 np.save(fn_cache, mean_Z_detector)
         psd = np.array(
             [
@@ -993,50 +1025,56 @@ if __name__ == "__main__":
         default=3,  # First horizontal qubit line under 6-line control
     )
     parser.add_argument(
+        "--fn_schedule",
+        type=str,
+        help="fn_schedule labels an Excel QPU schedule file that should be in the path. The schedules for specific processors can be found on the website. The schedule is used to parameterize an approximate frequency target, and the susceptibility of that frequency to a change in the anneal offset.",
+        default=None,
+    )
+    parser.add_argument(
         "--target_c",
         type=float,
-        help="target_c",
-        default=0.37,  # First horizontal qubit line under 6-line control
+        help="The normalized phi_cjj value for the target. This should correspond to a frequency A(c_target) of approximately 1 to 3GHz for reasonable performance. The fn_schedule file can be used to infer an approximate relationship between A(c_target) and c_target.",
+        default=0.37,
     )
     parser.add_argument(
         "--delay_min",
         type=float,
-        help="Initial delay time (us) for data collection",
-        default=0.005,  # Sufficient for decoupling from source
+        help="Initial delay time (us) for data collection. Ideally this matches to the earliest delay for which the signal is depolarized.",
+        default=0.005,
     )
     parser.add_argument(
         "--delay_max",
         type=float,
-        help="Final delay time (us) for data collection",
-        default=0.015,  # Oscillations not completely decayed
+        help="Final delay time (us) for data collection.",
+        default=0.015,
     )
     parser.add_argument(
         "--delay_min_fit",
         type=float,
-        help="Initial delay time (us) for frequency estimation, by default matches delay_max_fit",
-        default=None,  # Matches delay_min by default
+        help="Initial delay time (us) for frequency estimation, by default matches delay_min. This is ideally chosen to match the smallest delay for which the signal is not polarized.",
+        default=None,
     )
     parser.add_argument(
         "--delay_max_fit",
         type=float,
-        help="Final delay time (us) for frequency estimation, by default matches delay_max_fit",
-        default=None,  # Matches delay_max by default
+        help="Final delay time (us) for frequency estimation, by default matches delay_max. This is ideally chosen such that the number of oscillations captured (delay_max-delay_min)*A(target_c) is large, yet small enough that data collection is efficient and signal is not dominated by the decohered portion of the evolution at large delay.",
+        default=None,
     )
     parser.add_argument(
         "--line_target",
         type=int,
-        help="Target line: by default all lines not reserved for the source and detector are available",
+        help="Target line: by default all lines not reserved for the source and detector are available. Choosing a specific line can allow improved parameterization and accuracy (e.g. customization of detector delay relative to a specific target line, rather than an average).",
         default=None,  #
     )
     parser.add_argument(
         "--no_flux_biases",
         action="store_true",
-        help="Add this flag to omit the data analsis with anneal_offsets set",
+        help="Add this flag to omit the data analsis with recalibrated flux_biases",
     )
     parser.add_argument(
         "--no_anneal_offsets",
         action="store_true",
-        help="Add this flag to omit the data analsis with anneal_offsets set",
+        help="Add this flag to omit the data analsis with recalibrated anneal_offsets",
     )
     parser.add_argument(
         "--shim_detector_and_target",
@@ -1045,9 +1083,17 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-
+    print(args.fn_schedule)
+    if args.use_cache:
+        cache_str = _get_experiment_id(args)
+    else:
+        cache_str = None
+    if args.line_target is None and args.shim_detector_and_target:
+        raise ValueError('The alternating method used is very sensitive to '
+                         'relative line delays, therefore it is used with a '
+                         'restriction to 3 lines at a time')
     main(
-        use_cache=args.use_cache,
+        cache_str=cache_str,
         solver=args.solver_name,
         detector_lines=(args.line_detector,),
         source_lines=(args.line_source,),
@@ -1060,4 +1106,5 @@ if __name__ == "__main__":
         no_flux_biases=args.no_flux_biases,
         target_lines={args.line_target} if args.line_target is not None else None,
         shim_detector_and_target=args.shim_detector_and_target,
+        fn_schedule=args.fn_schedule,
     )
