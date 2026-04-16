@@ -44,6 +44,7 @@ from dwave.experimental.shimming import shim_flux_biases
 
 
 def _get_experiment_id(args):
+    print(vars(args))
     args_string = json.dumps(vars(args), sort_keys=True)
     return hashlib.sha256(args_string.encode("utf-8")).hexdigest()
 
@@ -378,6 +379,8 @@ def main(
     solver: dict | str | None = None,
     detector_lines: Iterable[int] = (0,),
     source_lines: Iterable[int] = (3,),
+    seed: int | None = None,
+    max_num_embeddings: int | None = None,
     target_c: float = 0.37,
     no_flux_biases: bool = False,
     no_anneal_offsets: bool = False,
@@ -423,6 +426,10 @@ def main(
             The integer indices of the detector lines.
         source_lines:
             The integer indices of the source lines.
+        seed:
+            Random seed used for embedding generation.
+        max_num_embeddings:
+            Maximum number of embeddings to find. If None, search for all available embeddings.
         target_c:
             normalized control bias at which the target qubits are held
         no_flux_biases:
@@ -537,8 +544,13 @@ def main(
     plt.ylim([0, 2 * max(target_A, target_B)])
     plt.xlim([0, 1])
     plt.legend()
-
+    # try:
     qpu = DWaveSampler(solver=solver)
+    # except:
+    #    if cache_str:
+    #        print('QPU connection raised error, will look for cache files')
+    #    else:
+    #        raise
     zephyr_shape = qpu.properties["topology"]["shape"]
     exp_feature_info = get_properties(qpu)
     line_assignments = {
@@ -620,9 +632,10 @@ def main(
         embs = find_multiple_embeddings(
             S,
             T,
-            max_num_emb=None,
+            max_num_emb=max_num_embeddings,
             embedder_kwargs=subgraph_kwargs,
             one_to_iterable=True,
+            seed=seed,
         )
         with open(fn_cache, "wb") as f:
             pickle.dump(embs, f)
@@ -789,17 +802,25 @@ def main(
     plt.figure()
     plt.title("Time series for several qubits using distinct target lines")
     plotted_lines = set()
+    num_plotted = 0
     for idx, emb in enumerate(embs):
         q = emb[0][0]
         line_target = qubit_to_Advantage2_annealing_line(q, zephyr_shape)
-        if line_target not in plotted_lines:
+
+        if (line_target not in plotted_lines) and num_plotted < 6:
+            num_plotted = num_plotted + 1
+            if len(target_lines) > 1:
+                plotted_lines.add(line_target)
+                label = f"target line {line_target}, q={q}"
+            else:
+                label = f"q={q}"
             plt.plot(
                 delays * 1000,
                 mean_Z_detector[:, idx],
                 color=line_color[line_target],
-                label=f"target line {line_target}",
+                label=label,
             )
-            plotted_lines.add(line_target)
+
     plt.ylabel("Detector magnetizations")
     plt.xlabel("Detector delay, ns")
     plt.legend()
@@ -1025,6 +1046,18 @@ if __name__ == "__main__":
         default=3,  # First horizontal qubit line under 6-line control
     )
     parser.add_argument(
+        "--seed",
+        type=int,
+        help="Random seed for embedding generation.",
+        default=None,
+    )
+    parser.add_argument(
+        "--max_num_embeddings",
+        type=int,
+        help="Maximum number of embeddings to find. By default, all available embeddings are searched.",
+        default=None,
+    )
+    parser.add_argument(
         "--fn_schedule",
         type=str,
         help="fn_schedule labels an Excel QPU schedule file that should be in the path. The schedules for specific processors can be found on the website. The schedule is used to parameterize an approximate frequency target, and the susceptibility of that frequency to a change in the anneal offset.",
@@ -1089,14 +1122,18 @@ if __name__ == "__main__":
     else:
         cache_str = None
     if args.line_target is None and args.shim_detector_and_target:
-        raise ValueError('The alternating method used is very sensitive to '
-                         'relative line delays, therefore it is used with a '
-                         'restriction to 3 lines at a time')
+        raise ValueError(
+            "The alternating method used is very sensitive to "
+            "relative line delays, therefore it is used with a "
+            "restriction to 3 lines at a time"
+        )
     main(
         cache_str=cache_str,
         solver=args.solver_name,
         detector_lines=(args.line_detector,),
         source_lines=(args.line_source,),
+        seed=args.seed,
+        max_num_embeddings=args.max_num_embeddings,
         target_c=args.target_c,
         delay_min=args.delay_min,
         delay_max=args.delay_max,
