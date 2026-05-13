@@ -42,7 +42,7 @@ from dwave.experimental.shimming import shim_flux_biases
 def _make_anneal_schedules(
     exp_feature_info: list,
     target_c: float = 0.37,
-    times: list[float] | tuple[float] = (0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0),
+    times: list[float] | tuple[float] = (0.0, 1.0, 2.0, 22.0, 23.0, 24.0, 25.0),
     line_detector: int = 0,
     line_source: int = 3,
 ):
@@ -100,7 +100,7 @@ def _make_polarizing_schedules(
     num_lines: int = 6,
     *,
     sign_polarization: int = 1,
-    times: list[float] | tuple[float] = (0.0, 1.0, 2.0, 6.0),
+    times: list[float] | tuple[float] = (0.0, 1.0, 2.0, 25.0),
 ):
     """Set polarizing schedules suitable for Larmor precession.
 
@@ -327,6 +327,8 @@ def main(
     delay_min_fit: float | None = None,
     delay_max_fit: float | None = None,
     fn_schedule: str = "09-1317A-D_Advantage2_research1_4_annealing_schedule.xlsx",
+    legacy_polarizing_schedules: bool = False,
+    profile: str | None = None,
 ):
     """Demonstrate t-d-s variability and mitigation strategies
 
@@ -467,7 +469,7 @@ def main(
     plt.xlim([0, 1])
     plt.legend()
 
-    qpu = DWaveSampler(solver=solver)
+    qpu = DWaveSampler(solver=solver, profile=profile)
     zephyr_shape = qpu.properties["topology"]["shape"]
     exp_feature_info = get_properties(qpu)
     line_assignments = {
@@ -483,9 +485,11 @@ def main(
         line_detector=line_detector,
         target_c=target_c,
     )
+
     x_polarizing_schedules = _make_polarizing_schedules(
         line_source=line_source, num_lines=num_lines
     )
+
     x_schedule_delays = [0.0] * num_lines
 
     anneal_offsets = [0.0] * qpu.properties["num_qubits"]
@@ -498,10 +502,14 @@ def main(
         x_disable_filtering=True,
         x_schedule_delays=x_schedule_delays,
         x_anneal_schedules=x_anneal_schedules,
-        x_polarizing_schedules=x_polarizing_schedules,
         flux_biases=flux_biases,
         anneal_offsets=anneal_offsets,
     )
+    if legacy_polarizing_schedules:
+        qpu_parameters["x_polarizing_schedules"] = (x_polarizing_schedules,)
+    else:
+        qpu_parameters["x_polarizing_schedule"] = x_polarizing_schedules[line_source]
+        print(qpu_parameters["x_polarizing_schedule"])
 
     print(
         "Determine many T-D-S embeddings appropriate for parallel programming (see mca_embedding.py example)."
@@ -878,8 +886,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--solver_name",
         type=str,
-        help="Option to specify QPU solver, by default an experimental system supporting fast reverse anneal",
+        help="Option to specify QPU solver, by default an experimental system supporting experimental features",
         default=SOLVER_FILTER,
+    )
+    parser.add_argument(
+        "--profile",
+        type=str,
+        help="Option to specify QPU profile when use_client is True, by default None.",
+        default=None,
     )
     parser.add_argument(
         "--line_detector",
@@ -948,4 +962,5 @@ if __name__ == "__main__":
         delay_max_fit=args.delay_max_fit,
         no_anneal_offsets=args.no_anneal_offsets,
         no_flux_biases=args.no_flux_biases,
+        profile=args.profile,
     )
