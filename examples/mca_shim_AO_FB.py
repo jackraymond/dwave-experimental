@@ -36,8 +36,9 @@ from dwave.experimental.multicolor_anneal import (
     make_tds_intervals,
     make_tds_x_polarizing_schedule,
     make_tds_x_anneal_schedules,
-    qubit_to_Advantage2_annealing_line,
+    qubit_to_Advantage2_annealing_line, # Per comments, requires modification subject to dwave-experimental/pull/52
     SOLVER_FILTER,
+    standardize_schedule_endpoints,
 )
 from dwave.experimental.shimming import shim_flux_biases
 
@@ -316,6 +317,32 @@ def plot_shim(
     if fname is not None:
         plt.savefig(f"fb_{fname}")
 
+def _plot_tds_schedules(x_polarizing_schedule: list[list[float]],
+                        x_anneal_schedules: list[list[list[float]]],
+                        ):
+    """Plots the piecewise linear schedules used
+
+    Args:
+        x_polarizing_biases: The polarization signal.
+        x_anneal_schedules: The list of anneal schedules, one per line.
+    """
+    plt.figure()
+    plt.title('PWL waveforms')
+    for line, schedule in enumerate(x_anneal_schedules):
+        plt.plot(
+            [x for x, _ in schedule], [y for _, y in schedule], label=f"Line {line}"
+        )
+    plt.plot(
+        [x for x, _ in x_polarizing_schedule],
+        [y for _, y in x_polarizing_schedule],
+        label="Polarizing bias",
+        linestyle="dashed",
+        color="black",
+    )
+    plt.xlabel("Time (microseconds)")
+    plt.ylabel("Schedule value")
+    plt.legend()
+    plt.show()
 
 def main(
     use_cache: bool = False,
@@ -479,16 +506,38 @@ def main(
     num_lines = len(exp_feature_info[1])
     cmap = plt.colormaps.get_cmap("plasma")
     line_color = [cmap(i / (num_lines - 1)) for i in range(num_lines)]
-
-    x_anneal_schedules = _make_anneal_schedules(
-        exp_feature_info[1],
-        line_source=line_source,
-        line_detector=line_detector,
-        target_c=target_c,
+    delay = 2.0  # Quasi-static buffering of preparation and measurement stage
+    
+    (
+        polarized_preparation_interval,
+        depolarization_interval,
+        depolarized_preparation_interval,
+    ) = make_tds_intervals()
+    detector_quench_time = depolarized_preparation_interval[1] + delay
+    x_polarizing_schedule = make_tds_x_polarizing_schedule(
+        depolarization_interval=depolarization_interval,
     )
-    x_polarizing_schedule = _make_polarizing_schedule()
+    x_anneal_schedules = make_tds_x_anneal_schedules(
+        exp_feature_info,
+        target_lines=set(range(num_lines))-{line_detector,line_source},
+        depolarized_preparation_interval=depolarized_preparation_interval,
+        detector_lines=(line_detector,),
+        detector_quench_time=detector_quench_time,
+        source_lines=(line_source,),
+        polarized_preparation_interval=polarized_preparation_interval,
+        target_c=target_c,
+        post_pwl_delay=delay,
+    )
+    
+    print(x_polarizing_schedule)
+    print(x_anneal_schedules)
+    x_anneal_schedules, x_polarizing_schedule = standardize_schedule_endpoints(
+        x_anneal_schedules,
+        x_polarizing_schedule
+    )
+    _plot_tds_schedules(x_polarizing_schedule, x_anneal_schedules)
     x_schedule_delays = [0.0] * num_lines
-
+    
     anneal_offsets = [0.0] * qpu.properties["num_qubits"]
     flux_biases = [0.0] * qpu.properties["num_qubits"]
 
@@ -924,12 +973,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--no_flux_biases",
         action="store_true",
-        help="Add this flag to omit the data analsis with anneal_offsets set",
+        help="Add this flag to omit the flux_bias shimming calibration stage (simulaton run exclusively with flux_biases=[0.0]*num_qubits)",
     )
     parser.add_argument(
         "--no_anneal_offsets",
         action="store_true",
-        help="Add this flag to omit the data analsis with anneal_offsets set",
+        help="Add this flag to omit the data analsis with anneal_offsets set  (simulaton run exclusively with anneal_offsets=[0.0]*num_qubits)",
     )
 
     args = parser.parse_args()
