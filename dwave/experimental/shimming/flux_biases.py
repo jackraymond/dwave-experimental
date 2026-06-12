@@ -360,11 +360,11 @@ def shim_flux_biases(
             # The data is not used to update the flux_biases
             # This can be included as part of the test evaluation (if required)
             break
-
+        exp_av_mags = {
+            v: np.mean(mag_history[v][-num_experiments:]) for v in shimmed_variables
+        }
         if use_hypergradient:
-            magnetizations = np.array(
-                [np.mean(mag_history[v][-num_experiments:]) for v in shimmed_variables]
-            )
+            magnetizations = np.array([exp_av_mags[v] for v in shimmed_variables])
             if step > 0:
                 norm = np.linalg.norm(magnetizations) * np.linalg.norm(last_mags)
                 if math.isclose(norm, 0):
@@ -382,7 +382,7 @@ def shim_flux_biases(
             alpha = learning_schedule[step]
 
         for v in shimmed_variables:
-            flux_biases[v] -= alpha * sum(mag_history[v][-num_experiments:])
+            flux_biases[v] -= alpha * exp_av_mags[v]
             flux_bias_history[v].append(flux_biases[v])
 
     if pop_fb:
