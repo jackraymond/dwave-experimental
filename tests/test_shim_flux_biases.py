@@ -21,7 +21,12 @@ import dimod
 from dwave.samplers import SteepestDescentSampler
 from itertools import product
 
-from dwave.experimental.shimming import shim_flux_biases, qubit_freezeout_alpha_phi
+from dwave.experimental.multicolor_anneal import make_tds_x_schedules
+from dwave.experimental.shimming import (
+    shim_flux_biases,
+    shim_tds_flux_biases,
+    qubit_freezeout_alpha_phi,
+)
 from dwave.experimental.shimming.testing import ShimmingMockSampler
 
 
@@ -123,7 +128,6 @@ class FluxBiases(unittest.TestCase):
             sampling_params_updates = [{"num_reads": 4}, {}, {"num_reads": 1}]
             num_experiments = len(sampling_params_updates) * num_signed_experiments
 
-
             fb, fbh, mh = shim_flux_biases(
                 bqm,
                 sampler,
@@ -139,7 +143,9 @@ class FluxBiases(unittest.TestCase):
                 len(learning_schedule) * num_experiments,
                 len(mh[1]),
             )
-            exp_weights_per_update = {v: [1/num_experiments]*num_experiments for v in shimmed_variables}
+            exp_weights_per_update = {
+                v: [1 / num_experiments] * num_experiments for v in shimmed_variables
+            }
             fb2, fbh2, mh2 = shim_flux_biases(
                 bqm,
                 sampler,
@@ -151,8 +157,20 @@ class FluxBiases(unittest.TestCase):
                 exp_weights_per_update=exp_weights_per_update,
             )
             self.assertTrue(all(math.isclose(a, b) for a, b in zip(fb, fb2)))
-            self.assertTrue(all(math.isclose(fbh[v][i], fbh2[v][i]) for v in fbh for i in range(len(fbh[v]))))
-            self.assertTrue(all(math.isclose(mh[v][i], mh2[v][i]) for v in mh for i in range(len(mh[v]))))
+            self.assertTrue(
+                all(
+                    math.isclose(fbh[v][i], fbh2[v][i])
+                    for v in fbh
+                    for i in range(len(fbh[v]))
+                )
+            )
+            self.assertTrue(
+                all(
+                    math.isclose(mh[v][i], mh2[v][i])
+                    for v in mh
+                    for i in range(len(mh[v]))
+                )
+            )
         # Check num_steps:
         for num_steps in [0, 4]:
             bqm = dimod.BinaryQuadraticModel("SPIN").from_ising({0: 1}, {})
@@ -281,3 +299,67 @@ class FluxBiases(unittest.TestCase):
         y = qubit_freezeout_alpha_phi(2, 1, 1, 1)
         self.assertNotEqual(x, y)
         self.assertEqual(1, y)
+
+    def test_shim_tds_flux_biases_basic_functionality(self):
+        # See examples/ for more practical use case.
+
+        # sampler can be replaced by DWaveSampler() when client available
+        sampler = ShimmingMockSampler(substitute_sampler=SteepestDescentSampler())
+        edge = sampler.edgelist[0]
+        bqm = dimod.BinaryQuadraticModel.from_ising({}, {edge: -1})
+
+        # Replace assignment by get_properties(qpu) when client available.
+        n_lines = 3
+        exp_feature_info = [
+            {
+                "annealingLine": i,
+                "minAnnealingTimeStep": 0.01,
+                "minPolarizingTimeStep": 0.02,
+                "depolarizationAnnealScheduleRequiredDelay": 2.0,
+                "holdOvershootFor": 0.02,
+                "minCOvershoot": -7.0,
+                "maxCOvershoot": 8.0,
+                "maxC": 3.0,
+                "minC": -2.0,
+                "scheduleDelayStep": 1e-06,
+                "qubits": [edge[0]] if i == 0 else [edge[1]] if i == 1 else [0],
+            }
+            for i in range(n_lines)
+        ]
+        line_assignments = {
+            q: l for l, efi_l in enumerate(exp_feature_info) for q in efi_l["qubits"]
+        }
+        target_lines = {line_assignments[edge[0]]}
+        detector_lines = {line_assignments[edge[1]]}
+        x_anneal_schedules, x_polarizing_schedule = make_tds_x_schedules(
+            exp_feature_info=exp_feature_info,
+            target_lines=target_lines,
+            target_c=0.37,
+            detector_lines=detector_lines,
+            source_lines=set(),
+        )
+
+        sampling_params = {
+            "num_reads": 16,
+            "x_anneal_schedules": x_anneal_schedules,
+            "x_polarizing_schedule": x_polarizing_schedule,
+            "x_schedule_delays": [0.0] * n_lines,
+        }
+
+        flux_biases, fb_history, mag_history = shim_tds_flux_biases(
+            bqm=bqm,
+            sampler=sampler,
+            target_lines=target_lines,
+            detector_lines=detector_lines,
+            line_assignments=line_assignments,
+            sampling_params=sampling_params,
+            num_steps=2,
+            symmetrize_experiments=False,
+        )
+
+        self.assertIsInstance(flux_biases, list)
+        self.assertEqual(len(flux_biases), sampler.properties["num_qubits"])
+        self.assertSetEqual(set(fb_history.keys()), set(bqm.variables))
+        self.assertSetEqual(set(mag_history.keys()), set(bqm.variables))
+        self.assertTrue(all(len(fb_history[v]) == 3 for v in bqm.variables))
+        self.assertTrue(all(len(mag_history[v]) == 4 for v in bqm.variables))
