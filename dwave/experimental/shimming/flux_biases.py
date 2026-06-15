@@ -574,33 +574,3 @@ def shim_tds_flux_biases(
             exp_weights_per_update=exp_weights_per_update,
             shimmed_variables=shimmed_variables,
         )
-
-if __name__ == "__main__":
-    print('Temporary test code for shim_tds_flux_biases')
-    from dwave.system import DWaveSampler
-    from dwave.experimental.multicolor_anneal import get_properties
-    from dwave.experimental.multicolor_anneal.utils import make_tds_x_schedules
-
-    qpu = DWaveSampler('Advantage2_prototype2_x_internal')
-    edge_list = qpu.edgelist[:1]
-    bqm = dimod.BinaryQuadraticModel.from_ising({}, {e: -1 for e in edge_list})
-    exp_feature_info = get_properties(qpu)
-    line_assignments = {
-        n: al_idx for al_idx, al in enumerate(exp_feature_info) for n in al["qubits"]
-    }
-    target_lines = {line_assignments[edge_list[0][0]]}
-    detector_lines = {line_assignments[edge_list[0][1]]}
-    x_anneal_schedules, x_polarizing_schedule = make_tds_x_schedules(
-        exp_feature_info=exp_feature_info,
-        target_lines=target_lines,
-        target_c=0.5,
-        detector_lines=detector_lines,
-        source_lines=set(),
-    )
-    sampling_params = {
-        'num_reads': 2048,
-        'auto_scale': False,
-        'x_anneal_schedules': x_anneal_schedules,
-        'x_polarizing_schedule': x_polarizing_schedule,
-    }
-    a, b, c = shim_tds_flux_biases(bqm=bqm, sampler=qpu, target_lines=target_lines, detector_lines=detector_lines, line_assignments=line_assignments, sampling_params=sampling_params)
