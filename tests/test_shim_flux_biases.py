@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from copy import deepcopy
 import unittest
 import unittest.mock
 import math
@@ -42,13 +43,12 @@ class FluxBiases(unittest.TestCase):
         self.assertSetEqual(set(mh.keys()), set(fbh.keys()))
         self.assertSetEqual(set(mh.keys()), set(bqm.variables))
 
-    def test_flux_params(self):
+    def test_flux_biases_params(self):
         """Check parameters in = parameters out for empty learning_schedule or convergence test"""
         nv = 10
         bqm = dimod.BinaryQuadraticModel("SPIN").from_ising(
             {i: 1 for i in range(nv)}, {}
         )
-
         sampler = ShimmingMockSampler(substitute_sampler=SteepestDescentSampler())
 
         val = 1.1
@@ -122,10 +122,12 @@ class FluxBiases(unittest.TestCase):
             shimmed_variables = [1, 2]
             sampling_params_updates = [{"num_reads": 4}, {}, {"num_reads": 1}]
             num_experiments = len(sampling_params_updates) * num_signed_experiments
+
+
             fb, fbh, mh = shim_flux_biases(
                 bqm,
                 sampler,
-                sampling_params=sampling_params,
+                sampling_params=deepcopy(sampling_params),
                 learning_schedule=learning_schedule,
                 shimmed_variables=shimmed_variables,
                 sampling_params_updates=sampling_params_updates,
@@ -137,6 +139,20 @@ class FluxBiases(unittest.TestCase):
                 len(learning_schedule) * num_experiments,
                 len(mh[1]),
             )
+            exp_weights_per_update = {v: [1/num_experiments]*num_experiments for v in shimmed_variables}
+            fb2, fbh2, mh2 = shim_flux_biases(
+                bqm,
+                sampler,
+                sampling_params=deepcopy(sampling_params),
+                learning_schedule=learning_schedule,
+                shimmed_variables=shimmed_variables,
+                sampling_params_updates=sampling_params_updates,
+                symmetrize_experiments=symmetrize_experiments,
+                exp_weights_per_update=exp_weights_per_update,
+            )
+            self.assertTrue(all(math.isclose(a, b) for a, b in zip(fb, fb2)))
+            self.assertTrue(all(math.isclose(fbh[v][i], fbh2[v][i]) for v in fbh for i in range(len(fbh[v]))))
+            self.assertTrue(all(math.isclose(mh[v][i], mh2[v][i]) for v in mh for i in range(len(mh[v]))))
         # Check num_steps:
         for num_steps in [0, 4]:
             bqm = dimod.BinaryQuadraticModel("SPIN").from_ising({0: 1}, {})
