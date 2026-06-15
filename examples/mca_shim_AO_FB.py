@@ -357,7 +357,7 @@ def plot_shim(
     plt.ylabel("Magnetization")
 
     plt.figure("Flux_bias_by_shim_iteration")
-    plt.title("All detector flux biases")
+    plt.title("All shimmed flux_biases")
     plt.plot(flux_array.transpose())
     plt.xlabel("Shim iteration")
     plt.ylabel("Flux bias ($\\Phi_0$)")
@@ -1055,7 +1055,7 @@ def main(
             if apply_flux_bias_shim == "TDS":
                 print(
                     "Shim flux biases for zero magnetization on detector "
-                    "and target qubits at equilibrium (without sources depolarized)"
+                    "and target qubits at equilibrium (with sources depolarized)"
                 )
                 print()
 
