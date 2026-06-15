@@ -13,6 +13,13 @@
 # limitations under the License.
 """
 An example to show coarse-grained calibration refinement of flux_biases and anneal_offsets for multicolor annealing.
+
+This example builds many parallel target-detector-source embeddings, collects
+detector magnetization time series, estimates per-embedding frequency spread,
+and demonstrates two mitigation strategies:
+
+1. detector-only or TDS flux-bias shimming
+2. per-embedding anneal-offset refinement
 """
 
 import argparse
@@ -42,7 +49,7 @@ from dwave.experimental.multicolor_anneal import (
     make_tds_x_schedule_delays,
     SOLVER_FILTER,
 )
-from dwave.experimental.shimming import shim_flux_biases
+from dwave.experimental.shimming import shim_flux_biases, shim_tds_flux_biases
 
 
 def _figure_path(
@@ -491,6 +498,7 @@ def _fix_standard_c_range(anneal_schedules: list[list[list[float]]]) -> None:
     Args:
         anneal_schedules: List of anneal schedules to clip. Schedules are modified in-place.
     """
+
     for anneal_schedule in anneal_schedules:
         for tc in anneal_schedule:
             if tc[1] > 1.0:
@@ -567,7 +575,8 @@ def main(
     max_num_embeddings: int | None = None,
     target_c: float | None = None,
     target_A: float | None = 1.33,
-    skip_flux_bias_refinement: bool = False,
+    expected_A: float | None = 1.33,
+    apply_flux_bias_shim: Literal["None", "Detector", "TDS"] = "Detector",
     verify_anneal_offsets: bool = True,
     delay_min: float = 0.005,
     delay_max: float = 0.015,
@@ -577,9 +586,10 @@ def main(
     use_01_c_range: bool = False,
     symmetrize_c_bounds: bool = True,
     num_reads: int = 500,
+    use_common_bounds: bool = True,
     save_figures: bool = False,
 ) -> None:
-    """Demonstrate t-d-s variability and mitigation strategies
+    """Demonstrate T-D-S variability and mitigation strategies.
 
     An ideal single-qubit target system might be prepared in
     a polarized state |1> whose evolution is subsequently
@@ -593,7 +603,7 @@ def main(
 
     Higher accuracy shimming, and shimming of target flux_biases may also be
     desirable, but are beyond the scope of the example. Note that we can
-    use simple statistic to determine flux_bias assignment on a detector
+    use simple statistics to determine flux-bias assignment on a detector
     relative to a target. E.g. a) when decoupled from the source and detector
     a 1 qubit model frequency omega=root(A(s)^2 + B(s)^2 h^2) is a convex
     monotonic function of the linear field, b) When decoupled from the source
@@ -623,12 +633,12 @@ def main(
             target_c is inferred from the schedule and target_A by default.
         target_A:
             The expected qubit frequency in GHz.
-            Either target_A or target_c should be specified, not both.
-            When None target_A is inferred from target_c and the schedule.
-        skip_flux_bias_refinement:
-            When set to True, flux-bias refinement is skipped. When set to False,
-            detector flux biases are refined to achieve zero expected magnetization
-            at long delay.
+            Either expected_A or target_c should be specified, not both.
+            When None expected_A is inferred from target_c and the schedule.
+        apply_flux_bias_shim:
+            When set to "None", flux_biases are not modified. When "Detector", flux_biases
+            are modified on detector qubits to achieve zero expected magnetization at
+            long delay. When "TDS", flux_biases are modified on TDS qubits.
         verify_anneal_offsets:
             When set to True, data is collected and analyzed with anneal_offsets applied.
             When set to False, this verification stage is skipped.
@@ -651,11 +661,10 @@ def main(
             time and an appropriate scale for anneal_offset synchronization. This should be matched to the
             solver.
         use_01_c_range:
-            When set to True, restricts the schedule range to [0,1]. This lowers the detector and source quench
-            rates, impacting fidelity and some other parameters.
+            When ``True``, restricts generated schedule c-values to [0, 1].
         symmetrize_c_bounds:
-            Use a schedule range symmetric in c about zero. `use_01_c_range` must
-            be False.
+            If ``True``, use a schedule range symmetric in c about zero.
+            `use_01_c_range` must be False.
         save_figures:
             When True, save generated figures to a ``figures`` folder.
         num_reads:
@@ -673,6 +682,7 @@ def main(
         RuntimeError: If the QPU is unavailable and no cached data is found
             for a stage that requires new sampling.
     """
+
     print()
     print(
         "A variety of plots are shown to demonstrate heuristic correction of "
@@ -689,7 +699,8 @@ def main(
         raise ValueError("The fit window is incompatible with the data window")
     if delay_min_fit > delay_max_fit:
         raise ValueError("The fit window is empty")
-    # Schedule based approximations, target_A and dA/dc are approximated.
+    # Schedule based approximations, expected_A and dA/dc are approximated.
+    print(f"Schedule file used: {fn_schedule}")
     qpu_anneal_schedule = pd.read_excel(
         fn_schedule, sheet_name="Fast-Annealing Schedule"
     )
@@ -806,6 +817,7 @@ def main(
     num_lines = len(exp_feature_info[1])
     target_lines = set(range(num_lines)) - set(detector_lines) - set(source_lines)
     cmap = plt.colormaps.get_cmap("plasma")
+    
     line_color = [cmap(i / (num_lines - 1)) for i in range(num_lines)]
 
     x_anneal_schedules, x_polarizing_schedule = make_tds_x_schedules(
@@ -815,6 +827,7 @@ def main(
         detector_lines=detector_lines,
         source_lines=source_lines,
         use_01_c_range=use_01_c_range,
+        use_common_bounds=use_common_bounds,
         symmetrize_c_bounds=symmetrize_c_bounds,
     )
     _plot_tds_schedules(
@@ -823,7 +836,7 @@ def main(
     )
     x_schedule_delays = make_tds_x_schedule_delays(
         x_anneal_schedules=x_anneal_schedules,
-        quenched_lines=detector_lines + source_lines,
+        quenched_lines=detector_lines | source_lines,
         target_c=target_c,
         decimal_places=6,
     )
@@ -1011,18 +1024,11 @@ def main(
             plt.ylabel(r"Power Spectral Density, $|\langle Z\rangle(\omega)|^2$")
             plt.xlabel(r"Frequency ($\omega$), GHz")
             plt.legend()
-
     bqm = dimod.BinaryQuadraticModel("SPIN").from_ising(
         {n: 0 for n in S.nodes()}, {e: -1 for e in S.edges()}
     )
-    if not skip_flux_bias_refinement:
-        stage_idx += 1
-        print()
-        print(
-            f"Stage {stage_idx}: Shim flux biases for zero detector magnetization in"
-            " the limit of long delay (at equilibrium). "
-            "This requires 10-20 programmings by default."
-        )
+
+    if apply_flux_bias_shim != "None":
         fn_cache = f"cache/FB_{cache_str}.npy"
         if cache_str and os.path.isfile(fn_cache):
             with open(fn_cache, "rb") as f:
@@ -1045,23 +1051,44 @@ def main(
                 for n in bqm_embedded.variables
                 if line_assignments[n] in detector_lines
             }
-            delay0 = {
-                line: sampling_params["x_schedule_delays"][line]
-                for line in detector_lines
-            }
-            for line in detector_lines:
-                sampling_params["x_schedule_delays"][
-                    line
-                ] = 0.1  # Sources should be depolarized during measurement (equilibrium)
-            flux_biases, flux_history, mag_history = shim_flux_biases(
-                bqm=bqm_embedded,
-                sampler=qpu,
-                sampling_params=sampling_params,
-                shimmed_variables=shimmed_variables,
-            )
-            for line in detector_lines:
-                sampling_params["x_schedule_delays"][line] = delay0[line]
 
+            if apply_flux_bias_shim == "TDS":
+                print(
+                    "Shim flux biases for zero magnetization on detector "
+                    "and target qubits at equilibrium (without sources depolarized)"
+                )
+                print()
+
+                flux_biases, flux_history, mag_history = shim_tds_flux_biases(
+                    bqm=bqm_embedded,
+                    sampler=qpu,
+                    sampling_params=sampling_params,
+                    target_lines=target_lines,
+                    detector_lines=detector_lines,
+                    line_assignments=line_assignments,
+                )
+            elif apply_flux_bias_shim == "Detector":
+                print(
+                    "Shim flux biases for zero detector magnetization in"
+                    " the limit of long delay (at equilibrium)."
+                )
+                print()
+                # Deep for float Sequence with ndarray or list of floats:
+                x_schedule_delays = sampling_params["x_schedule_delays"].copy()
+                for line in detector_lines:
+                    sampling_params["x_schedule_delays"][
+                        line
+                    ] = 0.1  # Documented limit.
+                flux_biases, flux_history, mag_history = shim_flux_biases(
+                    bqm=bqm_embedded,
+                    sampler=qpu,
+                    sampling_params=sampling_params,
+                    shimmed_variables=shimmed_variables,
+                )
+                sampling_params["x_schedule_delays"] = x_schedule_delays
+            else:
+                raise ValueError("Unknown method")
+            
             if cache_str:
                 os.makedirs(os.path.dirname(fn_cache), exist_ok=True)
                 with open(fn_cache, "wb") as f:
@@ -1344,19 +1371,23 @@ def main(
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
-        description="A target-detector-source embedding example"
+        description=(
+            "Target-detector-source embedding demo with optional flux-bias "
+            "shimming and anneal-offset refinement."
+        )
     )
     parser.add_argument(
         "--use_cache",
         action="store_true",
-        help="Save/reload experimental data for current parameters. Note: QPU is "
-        "identified only by solver parameters; if graph_id changes, new "
-        "embeddings may be required.",
+        help=(
+            "Cache and reload experiment artifacts keyed by CLI parameters. "
+            "If solver graph_id changes, cached embeddings may be invalid."
+        ),
     )
     parser.add_argument(
         "--solver_name",
         type=str,
-        help="QPU solver name. Default: experimental system with fast reverse anneal.",
+        help="QPU solver name. Default research system with fast reverse anneal.",
         default=SOLVER_FILTER,
     )
     parser.add_argument(
@@ -1392,10 +1423,13 @@ if __name__ == "__main__":
         default=2.0,
     )
     parser.add_argument(
-        "--schedule_fn",
+        "--apply_flux_bias_shim",
         type=str,
-        help="Annealing schedule filename used to infer target_c and dA/dc.",
-        default="09-1323A-D_Advantage2_system4_annealing_schedule.xlsx",
+        choices=["None", "Detector", "TDS"],
+        default="Detector",
+        help="Flux-bias shimming mode: 'None' disables shimming, "
+        "'Detector' shims detector qubits to zero measured magnetization, "
+        "and 'TDS' alternates detector/target roles for TDS shimming.",
     )
     parser.add_argument(
         "--delay_min",
@@ -1436,16 +1470,30 @@ if __name__ == "__main__":
     parser.add_argument(
         "--use_01_c_range",
         action="store_true",
-        help="Restrict schedule to [0, 1] range. Lowers quench rates, affecting fidelity. "
-        "TODO: add symmetrized or overshoot c-range options.",
+        help=(
+            "Restrict generated schedule c-range to [0, 1]. This changes "
+            "detector/source quench behavior."
+        ),
     )
     parser.add_argument(
-        "--no_symmetrize_c_bounds",
         "--no-symmetrize-c-bounds",
         dest="symmetrize_c_bounds",
         action="store_false",
         default=True,
-        help="Disable symmetric c-bounds.",
+        help="Disable symmetric c-bounds around target_c when building schedules.",
+    )
+    parser.add_argument(
+        "--no-common-bounds",
+        dest="use_common_bounds",
+        action="store_false",
+        default=True,
+        help="Disable common c-bounds alignment across annealing lines.",
+    )
+    parser.add_argument(
+        "--fn_schedule",
+        type=str,
+        help="Path to the annealing schedule Excel file (.xlsx). Should be matched to the solver.",
+        default="09-1317A-D_Advantage2_research1_4_annealing_schedule.xlsx",
     )
     parser.add_argument(
         "--save_figures",
@@ -1454,7 +1502,6 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-
     if args.use_cache:
         cache_str = _get_experiment_id(args, num_char=8)
     else:
@@ -1471,8 +1518,9 @@ if __name__ == "__main__":
         delay_min_fit=args.delay_min_fit,
         delay_max_fit=args.delay_max_fit,
         verify_anneal_offsets=not args.skip_anneal_offset_verification,
-        skip_flux_bias_refinement=args.skip_flux_bias_refinement,
+        apply_flux_bias_shim=args.apply_flux_bias_shim,
         use_01_c_range=args.use_01_c_range,
         symmetrize_c_bounds=args.symmetrize_c_bounds,
+        use_common_bounds=args.use_common_bounds,
         save_figures=args.save_figures,
     )
