@@ -90,6 +90,8 @@ class MCA(unittest.TestCase, PropertiesCheckMixin):
             self.assertEqual(len(exp_feature_info), 2)
             lines = exp_feature_info[1]
 
+            self.assertEqual(len(exp_feature_info), 2)
+            lines = exp_feature_info[1]
             self.assertEqual(len(lines), n_lines)
             self.assertTrue(all(lines[i]['annealingLine'] == i for i in range(n_lines)))
             self.assertTrue(all(len(lines[i]['qubits']) == n_qubits for i in range(n_lines)))
@@ -205,11 +207,11 @@ class UtilsTestWithoutClient(unittest.TestCase):
         maxCOvershoot = 8.0
         depolarization_time_scale = 3.0  # Choose as a machine number to avoid precision issues.
 
-        exp_feature_info = [
+        polarizing_line_info = {'minPolarizingTimeStep': 0.02,
+                                'depolarizationAnnealScheduleRequiredDelay': 2.0}
+        annealing_line_info = [
             {'annealingLine': i,
              'minAnnealingTimeStep': 0.01,
-             'minPolarizingTimeStep': 0.02,
-             'depolarizationAnnealScheduleRequiredDelay': 2.0,
              'holdOvershootFor': 0.02,
              'minCOvershoot': minCOvershoot,
              'maxCOvershoot': maxCOvershoot,
@@ -217,6 +219,7 @@ class UtilsTestWithoutClient(unittest.TestCase):
              'minC': -2.0,
              'scheduleDelayStep': 1e-06,
              'qubits': list(range(i*100, (i+1)*100))} for i in range(n_lines)]
+        exp_feature_info = [polarizing_line_info, annealing_line_info]
 
         all_lines = list(range(n_lines))
         random.shuffle(all_lines)
