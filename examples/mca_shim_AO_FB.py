@@ -574,8 +574,7 @@ def main(
     seed: int | None = None,
     max_num_embeddings: int | None = None,
     target_c: float | None = None,
-    target_A: float | None = 1.33,
-    expected_A: float | None = 1.33,
+    target_A: float | None = 2.0,
     apply_flux_bias_shim: Literal["None", "Detector", "TDS"] = "Detector",
     verify_anneal_offsets: bool = True,
     delay_min: float = 0.005,
@@ -633,8 +632,11 @@ def main(
             target_c is inferred from the schedule and target_A by default.
         target_A:
             The expected qubit frequency in GHz.
-            Either expected_A or target_c should be specified, not both.
+            Some methods such as TDS are known to be unstable at lower frequency.
+            By default more data is used at higher frequency (density of sampling),
+            is in proportion to the Nyquist frequency.
             When None expected_A is inferred from target_c and the schedule.
+            Either expected_A or target_c should be specified, not both.
         apply_flux_bias_shim:
             When set to "None", flux_biases are not modified. When "Detector", flux_biases
             are modified on detector qubits to achieve zero expected magnetization at
@@ -817,7 +819,7 @@ def main(
     num_lines = len(exp_feature_info[1])
     target_lines = set(range(num_lines)) - set(detector_lines) - set(source_lines)
     cmap = plt.colormaps.get_cmap("plasma")
-    
+
     line_color = [cmap(i / (num_lines - 1)) for i in range(num_lines)]
 
     x_anneal_schedules, x_polarizing_schedule = make_tds_x_schedules(
@@ -1029,6 +1031,7 @@ def main(
     )
 
     if apply_flux_bias_shim != "None":
+        x_polarizing_schedule = sampling_params.pop("x_polarizing_schedule")
         fn_cache = f"cache/FB_{cache_str}.npy"
         if cache_str and os.path.isfile(fn_cache):
             with open(fn_cache, "rb") as f:
@@ -1066,6 +1069,7 @@ def main(
                     target_lines=target_lines,
                     detector_lines=detector_lines,
                     line_assignments=line_assignments,
+                    num_steps=25,
                 )
             elif apply_flux_bias_shim == "Detector":
                 print(
@@ -1088,7 +1092,7 @@ def main(
                 sampling_params["x_schedule_delays"] = x_schedule_delays
             else:
                 raise ValueError("Unknown method")
-            
+
             if cache_str:
                 os.makedirs(os.path.dirname(fn_cache), exist_ok=True)
                 with open(fn_cache, "wb") as f:
@@ -1103,6 +1107,7 @@ def main(
             _save_open_figures("figures/", cache_str)
         print("Close figures to proceed to next (experimental) stages.")
         plt.show()
+        sampling_params["x_polarizing_schedule"] = x_polarizing_schedule
     stage_idx += 1
     print()
     n_embs = len(embs)
@@ -1426,10 +1431,11 @@ if __name__ == "__main__":
         "--apply_flux_bias_shim",
         type=str,
         choices=["None", "Detector", "TDS"],
-        default="Detector",
+        default="TDS",
         help="Flux-bias shimming mode: 'None' disables shimming, "
         "'Detector' shims detector qubits to zero measured magnetization, "
-        "and 'TDS' alternates detector/target roles for TDS shimming.",
+        "and 'TDS' alternates detector/target roles for TDS shimming "
+        " (this can cause divergences at smaller than default expected_A frequency).",
     )
     parser.add_argument(
         "--delay_min",
@@ -1456,11 +1462,6 @@ if __name__ == "__main__":
         help="Final delay (us) for frequency estimation (default: matches delay_max). "
         "Choose largest delay with low noise.",
         default=None,
-    )
-    parser.add_argument(
-        "--skip_flux_bias_refinement",
-        action="store_true",
-        help="Skip flux-bias refinement (run with zero flux biases).",
     )
     parser.add_argument(
         "--skip_anneal_offset_verification",
@@ -1493,7 +1494,7 @@ if __name__ == "__main__":
         "--fn_schedule",
         type=str,
         help="Path to the annealing schedule Excel file (.xlsx). Should be matched to the solver.",
-        default="09-1317A-D_Advantage2_research1_4_annealing_schedule.xlsx",
+        default="09-1323A-D_Advantage2_system4_annealing_schedule.xlsx",
     )
     parser.add_argument(
         "--save_figures",

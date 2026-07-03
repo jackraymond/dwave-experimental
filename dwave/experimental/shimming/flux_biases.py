@@ -251,10 +251,10 @@ def shim_flux_biases(
         >>> alpha_phi = qubit_freezeout_alpha_phi()  # Unoptimized to the experiment, for demonstration purposes.
         >>> ls = [alpha_phi]*5
         >>> sp = {'num_reads': 2048, 'auto_scale': False}
-        >>> fb, fb_history, mag_history = shim_flux_biases(bqm,     # doctest: +SKIP
+        >>> fb, fb_history, mag_history = shim_flux_biases(bqm,
         ...     qpu,
         ...     sampling_params=sp,
-        ...     learning_schedule=ls)
+        ...     learning_schedule=ls)     # doctest: +SKIP
         ...
         >>> print(f"RMS magnetization by iteration: {np.sqrt(np.mean([np.array(v)**2 for v in mag_history.values()], axis=0))}") # doctest: +SKIP
 
@@ -436,10 +436,9 @@ def shim_tds_flux_biases(
     alpha: Optional[float] = None,
     shimmed_variables: Optional[Iterable[Variable]] = None,
     set_unused_lines_to_zero: bool = True,
+    decouple_tar_and_det: bool = True
 ) -> tuple[list[Bias], dict, dict]:
     """Shim flux biases using paired target and detector annealing lines.
-
-    THIS METHOD IS EXPERIMENTAL AND LACKS PROPER TESTING.
 
     Coupled qubits can act as complimentary detectors. If we assume the required 
     calibration refinement does not depend on the target/detector waveforms
@@ -454,6 +453,17 @@ def shim_tds_flux_biases(
     :math:`d\langle m_D\rangle/d\Phi_D > -\mathrm{sign}(J_{SD})\,d\langle m_D\rangle/d\Phi_S > 0`,
     we can pursue paired experiments and update only detector qubit fluxes
     in each with a convergence guarantee.
+
+    When ``shimmed_variables`` contains at least one variable assigned to a
+    target line, two experiments per iteration are run with detector and
+    target roles alternated (via swapped ``x_anneal_schedules`` and
+    ``x_schedule_delays``), and the update for each variable uses only the
+    experiment in which it plays the detector role. When ``shimmed_variables``
+    contains only detector variables, no alternation is performed and shimming
+    reduces to a single-experiment call to :func:`.shim_flux_biases`.
+
+    Note that under similar assumptions, we can reverse the roles of source and
+    detector to shim the source flux_bias as well.
 
     Args:
         bqm: A :class:`~dimod.binary.BinaryQuadraticModel` describing the
@@ -492,6 +502,11 @@ def shim_tds_flux_biases(
             ``x_anneal_schedules`` to zero-valued schedules, setting
             ``x_polarizing_schedule`` to zero, and setting
             ``x_schedule_delays`` to zero.
+        decouple_tar_and_det: If ``True``, a copy of ``bqm`` restricted to
+            variables assigned to ``target_lines`` or ``detector_lines`` is
+            used for shimming. This decouples the target–detector system
+            from any residual couplings to qubits on other annealing lines.
+            The caller's ``bqm`` is not modified. Default is ``True``.
     Returns:
         A tuple of three parts mirroring the return value of
         :func:`.shim_flux_biases`:
@@ -513,7 +528,19 @@ def shim_tds_flux_biases(
     ):
         raise ValueError(
             "target_lines and detector_lines should be a non-empty iterable of line indices"
-        ) 
+        )
+    viable_shimmed_variables = set(v for v in bqm.variables if line_assignments[v] in (detector_lines | target_lines))
+    if shimmed_variables is None:
+        shimmed_variables = viable_shimmed_variables
+    else:
+        shimmed_variables = set(shimmed_variables)
+        if not shimmed_variables.issubset(viable_shimmed_variables):
+            raise ValueError("shimmed_variables should be a subset of variables assigned to target_lines or detector_lines")
+    use_target_variables = any(line_assignments[v] in target_lines for v in shimmed_variables)  
+    if decouple_tar_and_det:
+        bqm = bqm.copy(deep=True)
+        bqm.remove_variables_from(set(bqm.variables).difference(viable_shimmed_variables))
+
     if set_unused_lines_to_zero:  
         # Detector and target lines are assumed to be present.
         # Other lines are neutralized both with respect to flux_bias
@@ -527,39 +554,37 @@ def shim_tds_flux_biases(
         sampling_params["x_schedule_delays"] = [0.0] * num_lines
     x_schedule_delays_reversed = deepcopy(sampling_params["x_schedule_delays"])
     x_anneal_schedules_reversed = deepcopy(sampling_params["x_anneal_schedules"])
+    if use_target_variables:
+        # Alternate between detector and target quench.
+        dl = next(iter(detector_lines))
+        for line in target_lines:
+            x_schedule_delays_reversed[line] = sampling_params["x_schedule_delays"][dl]
+            x_anneal_schedules_reversed[line] = sampling_params["x_anneal_schedules"][dl]
+        tl = next(iter(target_lines))
+        for line in detector_lines:
+            x_schedule_delays_reversed[line] = sampling_params["x_schedule_delays"][tl]
+            x_anneal_schedules_reversed[line] = sampling_params["x_anneal_schedules"][tl]
     
-    dl = next(iter(detector_lines))
-    for line in target_lines:
-        x_schedule_delays_reversed[line] = sampling_params["x_schedule_delays"][dl]
-        x_anneal_schedules_reversed[line] = sampling_params["x_anneal_schedules"][dl]
-    tl = next(iter(target_lines))
-    for line in detector_lines:
-        x_schedule_delays_reversed[line] = sampling_params["x_schedule_delays"][tl]
-        x_anneal_schedules_reversed[line] = sampling_params["x_anneal_schedules"][tl]
-
-    viable_shimmed_variables = set(v for v in bqm.variables if line_assignments[v] in (detector_lines | target_lines))
-    if shimmed_variables is None:
-        shimmed_variables = viable_shimmed_variables
+        exp_weights_per_update = {
+            v: (1.0, 0.0) if line_assignments[v] in detector_lines else (0.0, 1.0)
+            for v in shimmed_variables
+        }
+    
+        sampling_params_updates = [
+            {
+                "x_anneal_schedules": sampling_params["x_anneal_schedules"],
+                "x_schedule_delays": sampling_params["x_schedule_delays"],
+            },
+            {
+                "x_anneal_schedules": x_anneal_schedules_reversed,
+                "x_schedule_delays": x_schedule_delays_reversed,
+            },
+        ]
     else:
-        shimmed_variables = set(shimmed_variables)
-        if not shimmed_variables.issubset(viable_shimmed_variables):
-            raise ValueError("shimmed_variables should be a subset of variables assigned to target_lines or detector_lines")
-
-    exp_weights_per_update = {
-        v: (1.0, 0.0) if line_assignments[v] in detector_lines else (0.0, 1.0)
-        for v in shimmed_variables
-    }
-
-    sampling_params_update = [
-        {
-            "x_anneal_schedules": sampling_params["x_anneal_schedules"],
-            "x_schedule_delays": sampling_params["x_schedule_delays"],
-        },
-        {
-            "x_anneal_schedules": x_anneal_schedules_reversed,
-            "x_schedule_delays": x_schedule_delays_reversed,
-        },
-    ]
+        # Simple shim of detectors
+        sampling_params_updates = None
+        exp_weights_per_update = None
+        
     return shim_flux_biases(
             bqm,
             sampler,
@@ -570,7 +595,7 @@ def shim_tds_flux_biases(
             beta_hypergradient=beta_hypergradient,
             num_steps=num_steps,
             alpha=alpha,
-            sampling_params_updates=sampling_params_update,
+            sampling_params_updates=sampling_params_updates,
             exp_weights_per_update=exp_weights_per_update,
             shimmed_variables=shimmed_variables,
         )
