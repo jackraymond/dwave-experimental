@@ -328,7 +328,7 @@ class UtilsTestWithoutClient(unittest.TestCase):
             polarized_interval, depolarization_interval, depolarized_interval, quench_time = (
                 make_tds_intervals(
                     post_preparation_delay=11.0,
-                    depolarization_time_scale=3.0,
+                    buffering_time_scale=3.0,
                     depolarizing_time_scale=5.0,
                     anneal_preparation_time_scale=7.0,
                 )
