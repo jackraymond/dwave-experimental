@@ -1069,7 +1069,6 @@ def main(
                     target_lines=target_lines,
                     detector_lines=detector_lines,
                     line_assignments=line_assignments,
-                    num_steps=25,
                 )
             elif apply_flux_bias_shim == "Detector":
                 print(
