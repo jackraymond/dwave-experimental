@@ -62,8 +62,6 @@ def _save_open_figures(figures_dir: str, cache_str: str | None = None) -> None:
         fig.savefig(_figure_path(figures_dir, figure_label, cache_str))
 
 
-
-
 def _calc_anneal_offsets(
     frequencies: np.ndarray,
     psd: np.ndarray,
@@ -742,7 +740,7 @@ def main(
             exp_feature_info = pickle.load(f)
         online = False
     if len(exp_feature_info) != 2:
-        raise ValueError('Legacy format')
+        raise ValueError("Legacy format")
     line_assignments = {
         n: al_idx for al_idx, al in enumerate(exp_feature_info[1]) for n in al["qubits"]
     }
@@ -770,7 +768,7 @@ def main(
         x_anneal_schedules=x_anneal_schedules,
         quenched_lines=detector_lines + source_lines,
         target_c=target_c,
-        decimal_places=6
+        decimal_places=6,
     )
     x_schedule_delays = [0.0]*num_lines
     dt = 1 / target_A / 1000 / 4  # Appropriate scale for frequency resolution.
