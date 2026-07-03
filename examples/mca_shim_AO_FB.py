@@ -20,7 +20,7 @@ import hashlib
 import json
 import os
 import re
-from typing import Literal
+from typing import Collection, Iterable, Literal
 
 import pickle
 import pandas as pd
@@ -71,7 +71,7 @@ def _calc_anneal_offsets(
     dAdc: float,
     dAfit: float = 0.5,
     fit_to_expected_A: bool = True,
-):
+) -> np.ndarray:
     """Determine the anneal_offset necessary to synchronize frequency.
 
     After fully decoupling from the source, the signal is expected to be
@@ -95,7 +95,7 @@ def _calc_anneal_offsets(
             value squared at each frequency.
         expected_A: Expected/desired peak position (GHz).
         dAdc: Approximate rate of change of A with c (anneal offset).
-        dAfit: Fractional range around expected_A to use for estimation.
+        dAfit: Asymmetric interval around expected_A to use for estimation.
         fit_to_expected_A: If True, use expected_A as the reference; if False, use the mean.
 
     Returns:
@@ -126,12 +126,12 @@ def _calc_anneal_offsets(
 
 
 def make_y(
-    delays: np.ndarray, A: float, T2: float = 0.0101, sign_Jts_fbs=-1
+    delays: np.ndarray, A: float, T2: float = 0.0101, sign_Jts_fbs: int = -1
 ) -> np.ndarray:
     """Make a noise-free model signal
 
-    y(delays) = min(1, np.exp(-delays / T2)) * np.cos(2* np.pi * A * delays)
-
+    y(t) = sign(J) cos(2* pi * A * t) exp(-t/T2) for t >0, and
+           sign(J) for t < 0
     Args:
         delays: time(s) of measurement
         A: frequency
@@ -147,12 +147,14 @@ def make_y(
 
 
 def dy_dt0(
-    delays: np.ndarray, A: float, T2: float = 0.0101, sign_Jts_fbs=-1
-) -> list[np.ndarray]:
+    delays: np.ndarray, A: float, T2: float = 0.0101, sign_Jts_fbs: int = -1
+) -> np.ndarray:
     """Calculate derivative of signal model with respect to time delay.
 
-    Computes the derivative of the model signal y(t) = exp(-t/T2) * cos(2*pi*A*t)
-    with respect to the time delay parameter.
+    Computes the derivative of the model signal produced by ``make_y`` with
+    respect to the time delay. For ``t > 0`` the underlying signal is
+    ``sign_Jts_fbs * exp(-t/T2) * cos(2*pi*A*t)``; for ``t < 0`` it is
+    constant so the derivative is zero.
 
     Args:
         delays: Time delays at which to evaluate the derivative (microseconds).
@@ -172,12 +174,13 @@ def dy_dt0(
 
 
 def dy_dA(
-    delays: np.ndarray, A: float, T2: float = 0.0101, sign_Jts_fbs=-1
-) -> list[np.ndarray]:
+    delays: np.ndarray, A: float, T2: float = 0.0101, sign_Jts_fbs: int = -1
+) -> np.ndarray:
     """Calculate derivative of signal model with respect to frequency.
 
-    Computes the derivative of the model signal y(t) = exp(-t/T2) * cos(2*pi*A*t)
-    with respect to the frequency parameter A.
+    Computes the derivative of the ``make_y`` signal
+    ``sign_Jts_fbs * exp(-t/T2) * cos(2*pi*A*t)`` (for ``t > 0``) with respect
+    to the frequency parameter ``A``.
 
     Args:
         delays: Time delays at which to evaluate the derivative (microseconds).
@@ -200,7 +203,7 @@ def artificial_data(
     T2: float = 0.0101,
     num_independent_samples: int = float("Inf"),
     prng: np.random.Generator | int | None = None,
-):
+) -> np.ndarray:
     """Create an artificial data set
 
     with variance of (1 - y(t)^2) in the measured state. Given independent
@@ -230,9 +233,9 @@ def artificial_data(
 def run_parallel_experiment(
     sampler: ParallelEmbeddingComposite,
     bqm: dimod.BinaryQuadraticModel,
-    qpu_parameters: dict,
+    sampling_params: dict,
     delays: np.ndarray | list,
-    line_detector: int,
+    detector_lines: Iterable[int],
 ) -> np.ndarray:
     """Collect detector magnetization for a set of independent embeddings
 
@@ -241,20 +244,21 @@ def run_parallel_experiment(
     Args:
         sampler: Parallel embedding composite sampler wrapping the QPU sampler.
         bqm: Binary Quadratic Model.
-        qpu_parameters: Parameters passed to the QPU sampler.
+        sampling_params: Parameters passed to the QPU sampler.
         delays: Detector x_schedule_delays (microseconds).
-        line_detector: Detector line index.
+        detector_lines: Iterable of detector line indices.
 
     Returns:
         Numpy array of detector magnetizations (delays x embeddings).
     """
-    delay0 = qpu_parameters["x_schedule_delays"][line_detector]
+    delay0 = sampling_params["x_schedule_delays"].copy()
     mean_Z_detector = []
     for delay in tqdm(delays):
-        qpu_parameters["x_schedule_delays"][line_detector] = delay0 + delay
+        for line in detector_lines:
+            sampling_params["x_schedule_delays"][line] = delay0[line] + delay
         # Return as a list of samplesets, instead of aggregated:
         samplesets, _ = sampler.sample_multiple(
-            [bqm] * len(sampler.embeddings), **qpu_parameters
+            [bqm] * len(sampler.embeddings), **sampling_params
         )
         # Extract detector magnetization from each sampleset
         detector_samples = [
@@ -262,7 +266,7 @@ def run_parallel_experiment(
             for sampleset in samplesets
         ]
         mean_Z_detector.append([np.mean(sample) for sample in detector_samples])
-    qpu_parameters["x_schedule_delays"][line_detector] = delay0
+    sampling_params["x_schedule_delays"] = delay0
     return np.array(mean_Z_detector)
 
 
@@ -272,7 +276,7 @@ def plot_shim(
     num_experiments: int = 1,
     label: str = "",
     max_qubit_labels: int = 10,
-):
+) -> None:
     """Plot the iterative flux_bias_shim process.
 
     Args:
@@ -333,7 +337,7 @@ def plot_shim(
 def _plot_tds_schedules(
     x_polarizing_schedule: list[list[float]],
     x_anneal_schedules: list[list[list[float]]],
-):
+) -> None:
     """Plots the piecewise linear schedules used
 
     Args:
@@ -365,7 +369,7 @@ def imshow_data(
     first: int = 0,
     last: int | None = None,
     context_str: str = "",
-):
+) -> None:
     """Display detector magnetization data as a heatmap.
 
     Creates an image plot of detector magnetization values organized by delay times,
@@ -373,11 +377,16 @@ def imshow_data(
 
     Args:
         mean_Z_detector: 2D array of detector magnetizations (delays x embeddings).
-        delays: Array of time delay values (nanoseconds after conversion).
+        delays: Array of time delay values (microseconds); ytick labels are
+            rendered in nanoseconds (values are multiplied by 1000).
         colormap_type: Type of colormap to use ("default" or "divergent").
-        first: Starting index for the plotted range.
-        last: Ending index for the plotted range. If None, uses full array length.
-        context_str: Optional context string to append to figure title.
+        first: Index whose delay value is highlighted as an additional ytick
+            label. Does not restrict the plotted range.
+        last: Index one past the last delay value highlighted as an additional
+            ytick label. If None, uses ``mean_Z_detector.shape[0]``. Does not
+            restrict the plotted range.
+        context_str: Optional context string appended to the figure name and
+            included in the plot title.
     """
     fig_title = f"Timeseries_{colormap_type}_colormap{context_str}"
     if colormap_type == "divergent":
@@ -407,7 +416,9 @@ def imshow_data(
     plt.ylabel("Delay, nanoseconds")
 
 
-def _get_experiment_id(args, num_char: int = 8, verbose=True):
+def _get_experiment_id(
+    args: argparse.Namespace, num_char: int = 8, verbose: bool = True
+) -> str:
     """Generate a unique hash identifier for the current experiment parameters.
 
     Creates a reproducible hash of the experiment arguments (excluding save_figures)
@@ -436,7 +447,7 @@ def _get_experiment_id(args, num_char: int = 8, verbose=True):
     return identifier
 
 
-def _fix_standard_c_range(anneal_schedules):
+def _fix_standard_c_range(anneal_schedules: list[list[list[float]]]) -> None:
     """Clip anneal schedule values to the standard [0, 1] range.
 
     Modifies schedule arrays in-place to ensure all control parameter values
@@ -454,16 +465,16 @@ def _fix_standard_c_range(anneal_schedules):
 
 
 def _plot_time_series(
-    embs,
-    line_assignments,
-    mean_Z_detector,
-    delays,
-    line_color,
-    plotted_emb_idxs=None,
-    label_emb_idxs=None,
-    xlabel="Delay, nanoseconds",
-    ylabel="Detector magnetizations",
-):
+    embs: list,
+    line_assignments: dict[int, int],
+    mean_Z_detector: np.ndarray,
+    delays: np.ndarray,
+    line_color: list | None = None,
+    plotted_emb_idxs: Collection[int] | None = None,
+    label_emb_idxs: Collection[int] | None = None,
+    xlabel: str = "Delay, nanoseconds",
+    ylabel: str = "Detector magnetizations",
+) -> None:
     """Plot time series data for selected embeddings with line-based coloring.
 
     Creates a line plot of detector magnetization or other signals across delay times,
@@ -496,9 +507,11 @@ def _plot_time_series(
                 label = f"line {line_idx}"
         else:
             label = None
-        plt.plot(
-            delays, mean_Z_detector[:, emb_idx], color=line_color[line_idx], label=label
-        )
+        if line_color is not None:
+            color = line_color[line_idx]
+        else:
+            color = None
+        plt.plot(delays, mean_Z_detector[:, emb_idx], color=color, label=label)
     plt.ylabel(ylabel)
     plt.xlabel(xlabel)
     plt.legend()
@@ -508,12 +521,12 @@ def _plot_time_series(
 def main(
     cache_str: str | None = None,
     solver: dict | str | None = None,
-    line_detector: int = 0,
-    line_source: int = 3,
+    detector_lines: Iterable[int] = (0,),
+    source_lines: Iterable[int] = (3,),
     seed: int | None = None,
     max_num_embeddings: int | None = None,
     target_c: float | None = None,
-    expected_A: float | None = 1.33,
+    expected_A: float | None = 2.0,
     skip_flux_bias_refinement: bool = False,
     verify_anneal_offsets: bool = True,
     delay_min: float = 0.005,
@@ -525,7 +538,7 @@ def main(
     symmetrize_c_bounds: bool = True,
     num_reads: int = 500,
     save_figures: bool = False,
-):
+) -> None:
     """Demonstrate t-d-s variability and mitigation strategies
 
     An ideal single-qubit target system might be prepared in
@@ -556,10 +569,10 @@ def main(
             running new jobs through the client.
         solver:
             Name of the solver, or dictionary of characteristics.
-        line_detector:
-            The integer index of the detector line.
-        line_source:
-            The integer index of the source line.
+        detector_lines:
+            An iterable of integer indices of the detector lines.
+        source_lines:
+            An iterable of integer indices of the source lines.
         seed:
             Random seed used for embedding generation.
         max_num_embeddings:
@@ -600,15 +613,24 @@ def main(
         use_01_c_range:
             When set to True, restricts the schedule range to [0,1]. This lowers the detector and source quench
             rates, impacting fidelity and some other parameters.
+        symmetrize_c_bounds:
+            When set to True, the bounds for the schedule range are set equal on all lines.
         save_figures:
             When True, save generated figures to a ``figures`` folder.
         num_reads:
             The number of reads to perform for each measurement.
 
     Raises:
-        ValueError: If the number of lines is less than 3, or
-        if {detector_line, source_line} is not a size 2 subset of
-        set(range(num_lines))
+        ValueError: If the fit window (``delay_min_fit``, ``delay_max_fit``)
+            is incompatible with the data window (``delay_min``, ``delay_max``)
+            or empty; if neither or both of ``target_c`` and ``expected_A`` are
+            specified; if ``exp_feature_info`` has an unexpected (legacy)
+            format; or if the fit window contains fewer than one sample.
+        FileNotFoundError: If the QPU is offline and the fallback pickle
+            caches for solver properties or experimental feature info are
+            missing.
+        RuntimeError: If the QPU is unavailable and no cached data is found
+            for a stage that requires new sampling.
     """
     print()
     print(
@@ -619,13 +641,13 @@ def main(
     if delay_max_fit is None:
         delay_max_fit = delay_max  # Can be automated for SNR in principle.
     elif delay_max_fit > delay_max:
-        raise ValueError("Fit window exceeds data window")
+        raise ValueError("The fit window is incompatible with data window")
     if delay_min_fit is None:
         delay_min_fit = delay_min  # Can be automated for SNR in principle.
     elif delay_min_fit < delay_min:
-        raise ValueError("Fit window exceeds data window")
+        raise ValueError("The fit window is incompatible with data window")
     if delay_min_fit > delay_max_fit:
-        raise ValueError("Fit window is empty")
+        raise ValueError("The fit window is empty")
     # Schedule based approximations, expected_A and dA/dc are approximated.
     qpu_anneal_schedule = pd.read_excel(
         fn_schedule, sheet_name="Fast-Annealing Schedule"
@@ -742,12 +764,10 @@ def main(
         n: al_idx for al_idx, al in enumerate(exp_feature_info[1]) for n in al["qubits"]
     }
     num_lines = len(exp_feature_info[1])
-    target_lines = set(range(num_lines)) - {line_detector, line_source}
+    target_lines = set(range(num_lines)) - set(detector_lines) - set(source_lines)
     cmap = plt.colormaps.get_cmap("plasma")
     line_color = [cmap(i / (num_lines - 1)) for i in range(num_lines)]
 
-    detector_lines = (line_detector,)
-    source_lines = (line_source,)
     x_anneal_schedules, x_polarizing_schedule = make_tds_x_schedules(
         exp_feature_info=exp_feature_info,
         target_lines=target_lines,
@@ -858,7 +878,7 @@ def main(
 
     anneal_offsets = [0.0] * qpu.properties["num_qubits"]
     flux_biases = [0.0] * qpu.properties["num_qubits"]
-    qpu_parameters = dict(
+    sampling_params = dict(
         num_reads=num_reads,
         answer_mode="raw",
         x_disable_filtering=True,
@@ -877,9 +897,9 @@ def main(
 
     def _target_assignments(n: int):
         line = line_assignments[n]
-        if line == line_detector:
+        if line in detector_lines:
             return "detector"
-        elif line == line_source:
+        elif line in source_lines:
             return "source"
         else:
             return "target"
@@ -936,7 +956,7 @@ def main(
                 flux_biases, flux_history, mag_history = pickle.load(f)
         else:
             if not online:
-                raise (RuntimeError, "QPU not available, and no cached data found.")
+                raise RuntimeError("QPU not available, and no cached data found.")
             # Require zero magnetization in the limit of long delay (where
             # source impact has decayed away.
             bqm_embedded = dimod.BinaryQuadraticModel("SPIN").from_ising(
@@ -953,19 +973,24 @@ def main(
                 if qubit_to_Advantage2_annealing_line(
                     n, zephyr_shape, num_lines=num_lines
                 )
-                == line_detector
+                in detector_lines
             }
-            delay0 = qpu_parameters["x_schedule_delays"][line_detector]
-            qpu_parameters["x_schedule_delays"][
-                line_detector
-            ] = 0.1  # Sources should be depolarized during measurement (equilibrium)
+            delay0 = {
+                line: sampling_params["x_schedule_delays"][line]
+                for line in detector_lines
+            }
+            for line in detector_lines:
+                sampling_params["x_schedule_delays"][
+                    line
+                ] = 0.1  # Sources should be depolarized during measurement (equilibrium)
             flux_biases, flux_history, mag_history = shim_flux_biases(
                 bqm=bqm_embedded,
                 sampler=qpu,
-                sampling_params=qpu_parameters,
+                sampling_params=sampling_params,
                 shimmed_variables=shimmed_variables,
             )
-            qpu_parameters["x_schedule_delays"][line_detector] = delay0
+            for line in detector_lines:
+                sampling_params["x_schedule_delays"][line] = delay0[line]
 
             if cache_str:
                 os.makedirs(os.path.dirname(fn_cache), exist_ok=True)
@@ -975,7 +1000,7 @@ def main(
             mag_history,
             flux_history,
         )
-        qpu_parameters["flux_biases"] = flux_biases
+        sampling_params["flux_biases"] = flux_biases
         print("flux_biases refinement complete.")
         if save_figures:
             _save_open_figures("figures/", cache_str)
@@ -993,10 +1018,10 @@ def main(
         mean_Z_detector = np.load(fn_cache)
     else:
         if not online:
-            raise (RuntimeError, "QPU not available, and no cached data found.")
+            raise RuntimeError("QPU not available, and no cached data found.")
 
         mean_Z_detector = run_parallel_experiment(
-            sampler, bqm, qpu_parameters, delays, line_detector
+            sampler, bqm, sampling_params, delays, detector_lines
         )
         if cache_str:
             os.makedirs(os.path.dirname(fn_cache), exist_ok=True)
@@ -1034,7 +1059,7 @@ def main(
     for colormap_type in ["divergent", "default"]:
         imshow_data(
             mean_Z_detector=mean_Z_detector,
-            delays=delays * 1000,
+            delays=delays,
             colormap_type=colormap_type,
             first=first,
             last=last,
@@ -1090,14 +1115,14 @@ def main(
             mean_Z_detector = np.load(fn_cache)
         else:
             if not online:
-                raise (RuntimeError, "QPU not available, and no cached data found.")
+                raise RuntimeError("QPU not available, and no cached data found.")
 
             for emb, ao in zip(embs, anneal_offsets):
-                qpu_parameters["anneal_offsets"][
+                sampling_params["anneal_offsets"][
                     emb[0][0]
                 ] -= ao  # Apply correction to target on each embedding
             mean_Z_detector = run_parallel_experiment(
-                sampler, bqm, qpu_parameters, delays, line_detector
+                sampler, bqm, sampling_params, delays, detector_lines
             )
             if cache_str:
                 np.save(fn_cache, mean_Z_detector)
@@ -1223,16 +1248,18 @@ if __name__ == "__main__":
         default=SOLVER_FILTER,
     )
     parser.add_argument(
-        "--line_detector",
+        "--detector_lines",
         type=int,
-        help="Detector line",
-        default=0,  # First vertical qubit line
+        nargs="+",
+        help="Detector lines (one or more integer indices).",
+        default=[0],  # First vertical qubit line
     )
     parser.add_argument(
-        "--line_source",
+        "--source_lines",
         type=int,
-        help="Source line",
-        default=3,  # First horizontal qubit line under 6-line control
+        nargs="+",
+        help="Source lines (one or more integer indices).",
+        default=[3],  # First horizontal qubit line under 6-line control
     )
     parser.add_argument(
         "--seed",
@@ -1250,7 +1277,7 @@ if __name__ == "__main__":
         "--expected_A",
         type=float,
         help="Expected qubit frequency (GHz). Schedule infers corresponding target_c.",
-        default=1.33,
+        default=2.0,
     )
     parser.add_argument(
         "--schedule_fn",
@@ -1323,8 +1350,8 @@ if __name__ == "__main__":
     main(
         cache_str=cache_str,
         solver=args.solver_name,
-        line_detector=args.line_detector,
-        line_source=args.line_source,
+        detector_lines=tuple(args.detector_lines),
+        source_lines=tuple(args.source_lines),
         expected_A=args.expected_A,
         fn_schedule=args.schedule_fn,
         delay_min=args.delay_min,
