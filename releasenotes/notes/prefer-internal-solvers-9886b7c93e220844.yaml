@@ -1,0 +1,9 @@
+---
+features:
+  - |
+    Prefer internal solvers when selecting a solver with
+    :attr:`~dwave.experimental.fast_reverse_anneal.api.SOLVER_FILTER`.
+upgrade:
+  - |
+    Drop legacy solvers from the
+    :attr:`~dwave.experimental.fast_reverse_anneal.api.SOLVER_FILTER`.

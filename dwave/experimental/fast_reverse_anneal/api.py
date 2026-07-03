@@ -23,7 +23,14 @@ from dwave.system import DWaveSampler
 __all__ = ['SOLVER_FILTER', 'get_solver_name', 'get_parameters']
 
 
-SOLVER_FILTER = dict(name__regex=r'Advantage2_system4_x_internal.*|Advantage2_research2.*|Advantage2_prototype2.*|Advantage2_research1.*') 
+def _solver_priority(solver):
+    # Prioritize "internal" solvers during feature-based solver selection
+    return -int('internal' in solver.name)
+
+SOLVER_FILTER = dict(
+    name__regex=r'Advantage2_system4_x_internal|Advantage2_research2.*',
+    order_by=_solver_priority,
+)
 """Filter for an available solver that supports advanced annealing features.
 
 Feature-based solver selection returns the first available solver that supports
@@ -32,6 +39,10 @@ features such as fast reverse annealing.
 .. note:: currently SAPI does not support filtering for solvers with
     :ref:`experimental research <qpu_experimental_research>` features, so a
     simple pattern matching is used.
+
+.. note:: Internal solvers (e.g. ``Advantage2_system4_x_internal``)
+    are prioritized over externally available research solvers when
+    :attr:`.SOLVER_FILTER` is used for solver selection.
 
 Example::
     >>> from dwave.system import DWaveSampler
