@@ -20,6 +20,9 @@ from importlib.resources import files
 
 import numpy
 
+from dwave.cloud import Client, Solver
+from dwave.cloud.exceptions import SolverNotFoundError
+from dwave.cloud.testing.mocks import structured_solver_data
 from dwave.system import DWaveSampler
 from dwave.experimental.fast_reverse_anneal import (
     get_parameters, get_solver_name, SOLVER_FILTER,
@@ -101,6 +104,53 @@ class FRA(unittest.TestCase):
                 load_schedules("Solver2")
             with self.assertRaises(ValueError):
                 load_schedules("Solver10")
+
+
+class SolverSelection(unittest.TestCase):
+
+    def setUp(self):
+        self.client = Client(endpoint='endpoint', token='token')
+
+        self.mocker = unittest.mock.patch('dwave.experimental.fast_reverse_anneal.api.Client')
+        self.mock_client = self.mocker.start()
+        self.mock_client.from_config.return_value.__enter__.return_value = self.client
+
+    def tearDown(self):
+        self.client.close()
+        self.mocker.stop()
+
+        # make sure solver name is not cached, so the next test is not affected
+        get_solver_name.cache_clear()
+
+    def setup_mock_solvers(self, names):
+        solvers = [
+            Solver(client=None, data=structured_solver_data(name=name)) for name in names
+        ]
+        self.client._fetch_solvers = lambda **kw: solvers
+
+    def test_internal_solver_selection(self):
+        # prefer 'internal' when available
+        self.setup_mock_solvers([
+            "Advantage2_research2.3",
+            "Advantage2_system4_x_internal",
+            "Advantage2_research3",
+        ])
+        self.assertIn('internal', get_solver_name())
+
+    def test_external_solver_selection(self):
+        # select 'research' when internal not available
+        self.setup_mock_solvers([
+            "Advantage2_system4",
+            "Advantage2_research2.3",
+            "system3",
+        ])
+        self.assertIn('research', get_solver_name())
+
+    def test_no_solver(self):
+        # fail when solvers from `SOLVER_FILTER` not available
+        self.setup_mock_solvers(["system1", "system2"])
+        with self.assertRaises(SolverNotFoundError):
+            get_solver_name()
 
 
 class LiveSmokeTests(unittest.TestCase):
