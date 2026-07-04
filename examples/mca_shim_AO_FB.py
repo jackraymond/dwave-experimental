@@ -614,7 +614,8 @@ def main(
             When set to True, restricts the schedule range to [0,1]. This lowers the detector and source quench
             rates, impacting fidelity and some other parameters.
         symmetrize_c_bounds:
-            When set to True, the bounds for the schedule range are set equal on all lines.
+            Use a schedule range symmetric in c about zero. `use_01_c_range` must
+            be False.
         save_figures:
             When True, save generated figures to a ``figures`` folder.
         num_reads:
