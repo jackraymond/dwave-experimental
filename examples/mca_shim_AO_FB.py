@@ -581,7 +581,7 @@ def main(
     delay_max: float = 0.015,
     delay_min_fit: float | None = None,
     delay_max_fit: float | None = None,
-    fn_schedule: str = "09-1323A-D_Advantage2_system4_annealing_schedule.xlsx",
+    schedule_fn: str = "09-1323A-D_Advantage2_system4_annealing_schedule.xlsx",
     use_01_c_range: bool = False,
     symmetrize_c_bounds: bool = True,
     num_reads: int = 500,
@@ -659,7 +659,7 @@ def main(
             An upper bound on the timeseries window used for inference of the target power spectral density.
             Too large a value reduces the efficiency of the estimator, since delays much larger than the
             T1 coherence time are dominated by noise.
-        fn_schedule: A schedule file that is used to estimate an appropriate sampling interval for delay
+        schedule_fn: A schedule file that is used to estimate an appropriate sampling interval for delay
             time and an appropriate scale for anneal_offset synchronization. This should be matched to the
             solver.
         use_01_c_range:
@@ -702,9 +702,9 @@ def main(
     if delay_min_fit > delay_max_fit:
         raise ValueError("The fit window is empty")
     # Schedule based approximations, expected_A and dA/dc are approximated.
-    print(f"Schedule file used: {fn_schedule}")
+    print(f"Schedule file used: {schedule_fn}")
     qpu_anneal_schedule = pd.read_excel(
-        fn_schedule, sheet_name="Fast-Annealing Schedule"
+        schedule_fn, sheet_name="Fast-Annealing Schedule"
     )
     plt.figure("Schedule")
     plt.title("Annealing Schedule")
@@ -838,7 +838,7 @@ def main(
     )
     x_schedule_delays = make_tds_x_schedule_delays(
         x_anneal_schedules=x_anneal_schedules,
-        quenched_lines=detector_lines | source_lines,
+        quenched_lines=set(detector_lines) | set(source_lines),
         target_c=target_c,
         decimal_places=6,
     )
@@ -1066,8 +1066,8 @@ def main(
                     bqm=bqm_embedded,
                     sampler=qpu,
                     sampling_params=sampling_params,
-                    target_lines=target_lines,
-                    detector_lines=detector_lines,
+                    target_lines=set(target_lines),
+                    detector_lines=set(detector_lines),
                     line_assignments=line_assignments,
                 )
             elif apply_flux_bias_shim == "Detector":
@@ -1490,7 +1490,7 @@ if __name__ == "__main__":
         help="Disable common c-bounds alignment across annealing lines.",
     )
     parser.add_argument(
-        "--fn_schedule",
+        "--schedule_fn",
         type=str,
         help="Path to the annealing schedule Excel file (.xlsx). Should be matched to the solver.",
         default="09-1323A-D_Advantage2_system4_annealing_schedule.xlsx",
