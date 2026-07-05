@@ -252,17 +252,29 @@ def run_parallel_experiment(
         delays: Detector x_schedule_delays (microseconds).
         detector_lines: Iterable of detector line indices.
 
+    Raises:
+        ValueError if 'x_schedule_delays' is not a key of
+        `sampling_params`
+
     Returns:
         Numpy array of detector magnetizations (delays x embeddings).
     """
-    delay0 = sampling_params["x_schedule_delays"].copy()
+    if "x_anneal_schedules" not in sampling_params:
+        raise ValueError("No multi-color anneal specified")
+    reset_delay = "x_schedule_delays" in sampling_params
+    x_schedule_delays = sampling_params.pop(
+        "x_schedule_delays", [0.0] * len(sampling_params["x_anneal_schedules"])
+    )
+    baseline_delays = x_schedule_delays.copy()
     mean_Z_detector = []
     for delay in tqdm(delays):
         for line in detector_lines:
-            sampling_params["x_schedule_delays"][line] = delay0[line] + delay
+            x_schedule_delays[line] = baseline_delays[line] + delay
         # Return as a list of samplesets, instead of aggregated:
         samplesets, _ = sampler.sample_multiple(
-            [bqm] * len(sampler.embeddings), **sampling_params
+            [bqm] * len(sampler.embeddings),
+            x_schedule_delays=x_schedule_delays,
+            **sampling_params,
         )
         # Extract detector magnetization from each sampleset
         detector_samples = [
@@ -270,7 +282,8 @@ def run_parallel_experiment(
             for sampleset in samplesets
         ]
         mean_Z_detector.append([np.mean(sample) for sample in detector_samples])
-    sampling_params["x_schedule_delays"] = delay0
+    if reset_delay:
+        sampling_params["x_schedule_delays"] = baseline_delays
     return np.array(mean_Z_detector)
 
 
@@ -389,8 +402,7 @@ def imshow_data(
         last: Index one past the last delay value highlighted as an additional
             ytick label. If None, uses ``mean_Z_detector.shape[0]``. Does not
             restrict the plotted range.
-        context_str: Optional context string appended to the figure name and
-            included in the plot title.
+        context_str: Optional context string to append to figure title.
     """
     fig_title = f"Timeseries_{colormap_type}_colormap{context_str}"
     if colormap_type == "divergent":
