@@ -30,6 +30,7 @@ import numpy as np
 from tqdm import tqdm
 
 import dimod
+from dimod.typing import Variable
 from dwave.system import DWaveSampler
 from dwave.system.testing import MockDWaveSampler
 from dwave.system.composites import ParallelEmbeddingComposite
@@ -315,6 +316,7 @@ def run_parallel_experiment(
     sampling_params: dict,
     delays: np.ndarray | list,
     detector_lines: Iterable[int],
+    detected_vars: Iterable[Variable] = (("detector", 0),),
 ) -> np.ndarray:
     """Collect detector magnetization for a set of independent embeddings
 
@@ -329,9 +331,11 @@ def run_parallel_experiment(
         sampling_params: Parameters passed to the QPU sampler.
         delays: Detector x_schedule_delays (microseconds).
         detector_lines: Iterable of detector line indices.
+        detected_vars: Iterable of bqm variables to keep for
+           detector magnetization calculation.
 
     Raises:
-        ValueError if 'x_schedule_delays' is not a key of
+        ValueError if 'x_anneal_schedules' is not a key of
         `sampling_params`
 
     Returns:
@@ -356,7 +360,7 @@ def run_parallel_experiment(
         )
         # Extract detector magnetization from each sampleset
         detector_samples = [
-            dimod.keep_variables(sampleset, [("detector", 0)]).record.sample
+            dimod.keep_variables(sampleset, detected_vars).record.sample
             for sampleset in samplesets
         ]
         mean_Z_detector.append([np.mean(sample) for sample in detector_samples])
