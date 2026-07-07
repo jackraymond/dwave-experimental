@@ -468,7 +468,7 @@ def _plot_tds_schedules(
     plt.ylabel("Schedule value")
     plt.legend()
     if plt_show_block is not None:
-        plt.show(plt_show_block)
+        plt.show(block=plt_show_block)
 
 
 def imshow_data(
@@ -526,7 +526,7 @@ def imshow_data(
     plt.xlabel("Target-Detector-Source embedding")
     plt.ylabel("Delay, nanoseconds")
     if plt_show_block is not None:
-        plt.show(plt_show_block)
+        plt.show(block=plt_show_block)
 
 
 def _get_experiment_id(
@@ -633,7 +633,7 @@ def _plot_time_series(
     plt.legend()
     plt.grid()
     if plt_show_block is not None:
-        plt.show(plt_show_block)
+        plt.show(block=plt_show_block)
 
 
 def main(
