@@ -590,7 +590,7 @@ def make_tds_x_anneal_schedules(
     use_common_bounds: bool = False,
     symmetrize_c_bounds: bool = False,
     use_standard_01_c_range: bool = False,
-    use_overshoot: bool = True,
+    use_overshoot: bool | dict[str, bool] = True,
     post_pwl_delay: float = 1.0,
 ) -> XAnnealSchedules:
     """Set annealing schedules for target-detector-source experiments.
@@ -655,7 +655,11 @@ def make_tds_x_anneal_schedules(
         use_standard_01_c_range: Whether to ignore exp_feature_line_info C bounds and
             use C and C-overshoot ranges ``[0, 1]`` for all lines.
         use_overshoot: Whether to use overshoot transitions for source and
-            detector quenches.
+            detector quenches. When a bool, the same setting is applied to both
+            source and detector quenches. A mapping with keys ``"source"`` and
+            ``"detector"`` may be provided instead to control overshoot for
+            source and detector quenches independently; missing keys default to
+            ``True``.
         post_pwl_delay: Additional delay, in microseconds, used to extend the
             terminal values of all schedules to a common endpoint.
 
@@ -693,6 +697,11 @@ def make_tds_x_anneal_schedules(
         depolarized_preparation_interval = depolarized_preparation_interval0
     if not detector_quench_time:
         detector_quench_time = quench_time0
+    if isinstance(use_overshoot, bool):
+        use_overshoot_source = use_overshoot_detector = use_overshoot
+    else:
+        use_overshoot_source = use_overshoot.get("source", True)
+        use_overshoot_detector = use_overshoot.get("detector", True)
     num_lines = len(exp_feature_line_info)
     all_lines = set(range(num_lines))
     source_lines = set(source_lines)
@@ -786,7 +795,7 @@ def make_tds_x_anneal_schedules(
         ]
 
     for line in source_lines:
-        if use_overshoot:
+        if use_overshoot_source:
             if holdOvershootFors[line] > 2 * min_time_steps[line]:
                 anneal_schedules[line] += [
                     [
@@ -830,7 +839,7 @@ def make_tds_x_anneal_schedules(
             ]
 
     for line in detector_lines:
-        if use_overshoot:
+        if use_overshoot_detector:
             if holdOvershootFors[line] > 2 * min_time_steps[line]:
                 anneal_schedules[line] += [
                     [
@@ -949,7 +958,7 @@ def make_tds_x_schedules(
     use_common_bounds: bool = False,
     use_01_c_range: bool = False,
     symmetrize_c_bounds: bool = False,
-    use_overshoot: bool = True,
+    use_overshoot: bool | dict[str, bool] = True,
     sign_polarization: Literal[-1, 1] = 1,
 ) -> tuple[XAnnealSchedules, AnnealSchedule]:
     """Build synchronized anneal and polarizing schedules for TDS experiments.
@@ -985,7 +994,11 @@ def make_tds_x_schedules(
             performance applications, but delays need to be considered more
             carefully between lines and QPUs.
         use_overshoot: Whether to use overshoot transitions for source and
-            detector quenches.
+            detector quenches. When a bool, the same setting is applied to both
+            source and detector quenches. A mapping with keys ``"source"`` and
+            ``"detector"`` may be provided instead to control overshoot for
+            source and detector quenches independently; missing keys default to
+            ``True``.
         sign_polarization: Initial sign of the polarizing bias, +1 or -1.
 
     Returns:
