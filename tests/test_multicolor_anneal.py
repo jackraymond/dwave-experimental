@@ -281,6 +281,25 @@ class UtilsTestWithoutClient(unittest.TestCase):
                 self.assertNotIn(minCOvershoot, [v for _, v in x_anneal_no_overshoot[detector_line]])
                 self.assertNotIn(maxCOvershoot, [v for _, v in x_anneal_no_overshoot[detector_line]])
 
+        with self.subTest(scenario="overshoot_independent"):
+            # Overshoot can be enabled on detector lines independently of source.
+            x_anneal_mixed, _ = make_tds_x_schedules(
+                exp_feature_info=exp_feature_info,
+                target_lines=target_lines,
+                target_c=target_c,
+                detector_lines=detector_lines,
+                source_lines=source_lines,
+                use_overshoot={"source": False, "detector": True},
+            )
+            for source_line in source_lines:
+                source_values = [v for _, v in x_anneal_mixed[source_line]]
+                self.assertNotIn(minCOvershoot, source_values)
+                self.assertNotIn(maxCOvershoot, source_values)
+            for detector_line in detector_lines:
+                detector_values = [v for _, v in x_anneal_mixed[detector_line]]
+                self.assertIn(minCOvershoot, detector_values)
+                self.assertIn(maxCOvershoot, detector_values)
+
         with self.subTest(scenario="negative_polarization"):
             # Sign controls the initial polarization direction.
             _, x_polarizing_neg = make_tds_x_schedules(
