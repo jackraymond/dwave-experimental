@@ -297,6 +297,7 @@ def plot_shim(
     num_experiments: int = 1,
     label: str = "",
     max_qubit_labels: int = 10,
+    plt_show_block: None | bool = None,
 ) -> None:
     """Plot the iterative flux_bias_shim process.
 
@@ -311,6 +312,8 @@ def plot_shim(
         label: a label for the plots, used in legends.
         max_qubit_labels: maximum number of qubit labels to include in legend,
             if larger, defaults to no labels.
+        plt_show_block: If not None (default), then execute
+            :code:`plt.show(block=plt_show_block)` to display the figure.
     """
     mag_array = np.array(list(mag_history.values()))
     flux_array = np.array(list(flux_history.values()))
@@ -353,17 +356,22 @@ def plot_shim(
     plt.ylabel("Flux bias ($\\Phi_0$)")
     if mag_array.shape[0] <= max_qubit_labels:
         plt.legend(flux_history.keys(), title=f"{label} Qubit index")
+    if plt_show_block is not None:
+        plt.show(block=plt_show_block)
 
 
 def _plot_tds_schedules(
     x_polarizing_schedule: list[list[float]],
     x_anneal_schedules: list[list[list[float]]],
+    plt_show_block: None | bool = None,
 ) -> None:
     """Plots the piecewise linear schedules used
 
     Args:
         x_polarizing_schedule: The polarization signal.
         x_anneal_schedules: The list of anneal schedules, one per line.
+        plt_show_block: If not None (default), then execute
+            :code:`plt.show(block=plt_show_block)` to display the figure.
     """
     plt.figure("PWL multi-color annealing schedules")
     plt.title("PWL schedules")
@@ -381,6 +389,8 @@ def _plot_tds_schedules(
     plt.xlabel("Time (microseconds)")
     plt.ylabel("Schedule value")
     plt.legend()
+    if plt_show_block is not None:
+        plt.show(plt_show_block)
 
 
 def imshow_data(
@@ -390,6 +400,7 @@ def imshow_data(
     first: int = 0,
     last: int | None = None,
     context_str: str = "",
+    plt_show_block: None | bool = None,
 ) -> None:
     """Display detector magnetization data as a heatmap.
 
@@ -407,6 +418,8 @@ def imshow_data(
             ytick label. If None, uses ``mean_Z_detector.shape[0]``. Does not
             restrict the plotted range.
         context_str: Optional context string to append to figure title.
+        plt_show_block: If not None (default), then execute
+            :code:`plt.show(block=plt_show_block)` to display the figure.
     """
     fig_title = f"Timeseries_{colormap_type}_colormap{context_str}"
     if colormap_type == "divergent":
@@ -434,6 +447,8 @@ def imshow_data(
     )
     plt.xlabel("Target-Detector-Source embedding")
     plt.ylabel("Delay, nanoseconds")
+    if plt_show_block is not None:
+        plt.show(plt_show_block)
 
 
 def _get_experiment_id(
@@ -494,6 +509,7 @@ def _plot_time_series(
     label_emb_idxs: Collection[int] | None = None,
     xlabel: str = "Delay, nanoseconds",
     ylabel: str = "Detector magnetizations",
+    plt_show_block: None | bool = None,
 ) -> None:
     """Plot time series data for selected embeddings with line-based coloring.
 
@@ -510,6 +526,8 @@ def _plot_time_series(
         label_emb_idxs: Set of embedding indices to label in legend. If None, uses plotted_emb_idxs.
         xlabel: Label for the x-axis.
         ylabel: Label for the y-axis.
+        plt_show_block: If not None (default), then execute
+            :code:`plt.show(block=plt_show_block)` to display the figure.
     """
 
     if plotted_emb_idxs is None:
@@ -536,6 +554,8 @@ def _plot_time_series(
     plt.xlabel(xlabel)
     plt.legend()
     plt.grid()
+    if plt_show_block is not None:
+        plt.show(plt_show_block)
 
 
 def main(
