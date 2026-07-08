@@ -1,0 +1,9 @@
+---
+fixes:
+  - |
+    Update examples, tests and utils to accommodate modified get_properties
+    return format.
+notes:
+  - |
+    Defaults for examples are modified to reflect Advantage2_research2
+    properties and published documentation.

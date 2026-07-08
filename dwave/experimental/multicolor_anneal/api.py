@@ -25,8 +25,8 @@ __all__ = ['SOLVER_FILTER', 'get_solver_name', 'get_properties']
 
 
 def get_properties(sampler: DWaveSampler | Solver | str | None = None
-                   ) -> list[dict[str, Any]]:
-    """Return multicolor-annealing properties for each annealing line.
+                   ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Return multicolor-annealing properties
 
     Args:
         sampler:
@@ -37,8 +37,10 @@ def get_properties(sampler: DWaveSampler | Solver | str | None = None
             an MCA-enabled solver.
 
     Returns:
-        Annealing-line properties for all available annealing lines, formatted
-        as list of dicts in ascending order of annealing-line index.
+        A tuple containing two elements:
+        1. A dictionary of annealing-line independent properties.
+        2. Annealing-line specific properties for all available annealing lines,
+        formatted as list of dicts in ascending order of annealing-line index.
 
     Examples:
         Retrieve MCA properties for the annealing lines of a default solver, and
@@ -46,10 +48,10 @@ def get_properties(sampler: DWaveSampler | Solver | str | None = None
 
         >>> from dwave.experimental import multicolor_anneal as mca
         ...
-        >>> annealing_lines = mca.get_properties()      # doctest: +SKIP
-        >>> len(annealing_lines)                        # doctest: +SKIP
+        >>> exp_feature_info = mca.get_properties()      # doctest: +SKIP
+        >>> len(exp_feature_info[1])                        # doctest: +SKIP
         6
-        >>> annealing_lines[0]['qubits']                # doctest: +SKIP
+        >>> exp_feature_info[1][0]['qubits']                # doctest: +SKIP
         [2, 6, 9, 14, 17, 18, ...]
     """
 
