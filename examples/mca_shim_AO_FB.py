@@ -1357,7 +1357,8 @@ if __name__ == "__main__":
         )
     )
     parser.add_argument(
-        "--use_cache",
+        "--use-cache",
+        dest="use_cache",
         action="store_true",
         help=(
             "Cache and reload experiment artifacts keyed by CLI parameters. "
@@ -1365,20 +1366,23 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
-        "--solver_name",
+        "--solver-name",
+        dest="solver_name",
         type=str,
         help="QPU solver name. Default research system with fast reverse anneal.",
         default=SOLVER_FILTER,
     )
     parser.add_argument(
-        "--detector_lines",
+        "--detector-lines",
+        dest="detector_lines",
         type=int,
         nargs="+",
         help="Detector lines (one or more integer indices).",
         default=[0],  # First vertical qubit line
     )
     parser.add_argument(
-        "--source_lines",
+        "--source-lines",
+        dest="source_lines",
         type=int,
         nargs="+",
         help="Source lines (one or more integer indices).",
@@ -1391,19 +1395,22 @@ if __name__ == "__main__":
         default=None,
     )
     parser.add_argument(
-        "--max_num_embeddings",
+        "--max-num-embeddings",
+        dest="max_num_embeddings",
         type=int,
         help="Max embeddings to find (default: all available).",
         default=None,
     )
     parser.add_argument(
-        "--target_A",
+        "--target-A",
+        dest="target_A",
         type=float,
         help="Expected qubit frequency (GHz). Schedule infers corresponding target_c.",
         default=2.0,
     )
     parser.add_argument(
-        "--apply_flux_bias_shim",
+        "--apply-flux-bias-shim",
+        dest="apply_flux_bias_shim",
         type=str,
         choices=["None", "Detector", "TDS"],
         default="TDS",
@@ -1414,38 +1421,44 @@ if __name__ == "__main__":
         "when target_c is desynchronized.",
     )
     parser.add_argument(
-        "--delay_min",
+        "--delay-min",
+        dest="delay_min",
         type=float,
         help="Initial delay time (us) for data collection",
         default=0.015,
     )
     parser.add_argument(
-        "--delay_max",
+        "--delay-max",
+        dest="delay_max",
         type=float,
         help="Final delay time (us) for data collection",
         default=0.025,  # Oscillations not completely decayed
     )
     parser.add_argument(
-        "--delay_min_fit",
+        "--delay-min-fit",
+        dest="delay_min_fit",
         type=float,
         help="Initial delay (us) for frequency estimation (default: matches delay_min). "
         "Choose smallest delay with non-polarized signal.",
         default=None,
     )
     parser.add_argument(
-        "--delay_max_fit",
+        "--delay-max-fit",
+        dest="delay_max_fit",
         type=float,
         help="Final delay (us) for frequency estimation (default: matches delay_max). "
         "Choose largest delay with low noise.",
         default=None,
     )
     parser.add_argument(
-        "--skip_anneal_offset_verification",
+        "--skip-anneal-offset-verification",
+        dest="skip_anneal_offset_verification",
         action="store_true",
         help="Skip the data analysis stage with anneal offsets applied.",
     )
     parser.add_argument(
-        "--use_01_c_range",
+        "--use-01-c-range",
+        dest="use_01_c_range",
         action="store_true",
         help=(
             "Restrict generated schedule c-range to [0, 1]. This changes "
@@ -1467,13 +1480,15 @@ if __name__ == "__main__":
         help="Disable common c-bounds alignment across annealing lines.",
     )
     parser.add_argument(
-        "--schedule_fn",
+        "--schedule-fn",
+        dest="schedule_fn",
         type=str,
         help="Path to the annealing schedule Excel file (.xlsx). Should be matched to the solver.",
         default="09-1323A-D_Advantage2_system4_annealing_schedule.xlsx",
     )
     parser.add_argument(
-        "--save_figures",
+        "--save-figures",
+        dest="save_figures",
         action="store_true",
         help="Save figures to figures/ folder with hash-based names.",
     )
