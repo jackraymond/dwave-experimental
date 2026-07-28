@@ -617,8 +617,8 @@ def main(
             Some methods such as TDS are known to be unstable at lower frequency.
             By default more data is used at higher frequency (density of sampling),
             is in proportion to the Nyquist frequency.
-            When None expected_A is inferred from target_c and the schedule.
-            Either expected_A or target_c should be specified, not both.
+            When None target_A is inferred from target_c and the schedule.
+            Either target_A or target_c should be specified, not both.
         apply_flux_bias_shim:
             When set to "None", flux_biases are not modified. When "Detector", flux_biases
             are modified on detector qubits to achieve zero expected magnetization at
@@ -657,7 +657,7 @@ def main(
     Raises:
         ValueError: If the fit window (``delay_min_fit``, ``delay_max_fit``)
             is incompatible with the data window (``delay_min``, ``delay_max``)
-            or empty; if neither or both of ``target_c`` and ``expected_A`` are
+            or empty; if neither or both of ``target_c`` and ``target_A`` are
             specified; if ``exp_feature_info`` has an unexpected (legacy)
             format; or if the fit window contains fewer than one sample.
         FileNotFoundError: If the QPU is offline and the fallback pickle
@@ -683,7 +683,7 @@ def main(
         raise ValueError("The fit window is incompatible with the data window")
     if delay_min_fit > delay_max_fit:
         raise ValueError("The fit window is empty")
-    # Schedule based approximations, expected_A and dA/dc are approximated.
+    # Schedule based approximations, target_A and dA/dc are approximated.
     print(f"Schedule file used: {schedule_fn}")
     qpu_anneal_schedule = pd.read_excel(
         schedule_fn, sheet_name="Fast-Annealing Schedule"
@@ -812,13 +812,13 @@ def main(
         x_polarizing_schedule,
         x_anneal_schedules,
     )
-    x_schedule_delays = make_tds_x_schedule_delays(
-        x_anneal_schedules=x_anneal_schedules,
-        quenched_lines=set(detector_lines) | set(source_lines),
-        target_c=target_c,
-        decimal_places=6,
-    )
-    x_schedule_delays = [0.0]*num_lines
+    #x_schedule_delays = make_tds_x_schedule_delays(
+    #    x_anneal_schedules=x_anneal_schedules,
+    #    quenched_lines=set(detector_lines) | set(source_lines),
+    #    target_c=target_c,
+    #    decimal_places=6,
+    #)  # Quench rates implied by linear PWL are unreliable, especially with overshoot.
+    x_schedule_delays = [0.0] * num_lines
     dt = 1 / target_A / 1000 / 4  # Appropriate scale for frequency resolution.
     delays = np.linspace(
         delay_min, delay_max, round((delay_max - delay_min) / dt) + 1, endpoint=True
@@ -919,7 +919,6 @@ def main(
         flux_biases=flux_biases,
         anneal_offsets=anneal_offsets,
     )
-
     stage_idx += 1
     print()
     print(f"Stage {stage_idx}: Find T-D-S embeddings for parallel programming")
@@ -1045,6 +1044,8 @@ def main(
                     target_lines=set(target_lines),
                     detector_lines=set(detector_lines),
                     line_assignments=line_assignments,
+                    # exp_feature_line_info=exp_feature_info[1],  # Can replace explicit sampling_params
+                    # target_c=target_c,  # Can replace explicit sampling_params
                 )
             elif apply_flux_bias_shim == "Detector":
                 print(
