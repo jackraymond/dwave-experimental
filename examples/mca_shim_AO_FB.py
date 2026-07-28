@@ -109,7 +109,7 @@ def _calc_anneal_offsets(
     """
 
     # NB a symmetric window only works for frequencies in the range,
-    # and some bias is introduced by use of a target.
+    # and some bias is introduced as a function of the window.
     Amin = target_A * dAfit
     Amax = target_A * (1 + dAfit)
 
@@ -489,24 +489,6 @@ def _get_experiment_id(
     return identifier
 
 
-def _fix_standard_c_range(anneal_schedules: list[list[list[float]]]) -> None:
-    """Clip anneal schedule values to the standard [0, 1] range.
-
-    Modifies schedule arrays in-place to ensure all control parameter values
-    are within the valid normalized range [0, 1].
-
-    Args:
-        anneal_schedules: List of anneal schedules to clip. Schedules are modified in-place.
-    """
-
-    for anneal_schedule in anneal_schedules:
-        for tc in anneal_schedule:
-            if tc[1] > 1.0:
-                tc[1] = 1.0
-            elif tc[1] < 0.0:
-                tc[1] = 0.0
-
-
 def _plot_time_series(
     embs: list,
     line_assignments: dict[int, int],
@@ -778,38 +760,32 @@ def main(
     plt.xlim([0, 1])
     plt.legend()
 
-    solver_props_cache = f"{solver}_properties.pkl"
-    solver_efi_cache = f"{solver}_exp_feature_info.pkl"
+    if cache_str:
+        qpu_fn = f"cache/qpu_{cache_str}.pkl"
     try:
         qpu = DWaveSampler(solver=solver)
+
         exp_feature_info = get_properties(qpu)
-        with open(solver_props_cache, "wb") as f:
-            pickle.dump(qpu.properties, f)
-        with open(solver_efi_cache, "wb") as f:
-            pickle.dump(exp_feature_info, f)
+        if cache_str:
+            with open(qpu_fn, "wb") as f:
+                pickle.dump((qpu.properties, exp_feature_info), f)
         online = True
     except Exception as error:
-        print(
-            "Connection to QPU error, if use_cache=True previously saved data will still be "
-            "loaded and processed."
-        )
-        if not (
-            os.path.isfile(solver_props_cache) and os.path.isfile(solver_efi_cache)
-        ):
+        if not cache_str:
+            raise (error)
+        elif not os.path.isfile(qpu_fn):
             raise FileNotFoundError(
-                f"Fallback pickle cache files are missing: "
-                f"{solver_props_cache}, {solver_efi_cache} and "
-                f"{error}"
+                f"use_cache=True, but cache files are missing and no client "
+                f"is available: {error}"
             )
-        with open(solver_props_cache, "rb") as f:
-            properties = pickle.load(f)
+        else:
+            with open(qpu_fn, "rb") as f:
+                properties, exp_feature_info = pickle.load(f)
         qpu = MockDWaveSampler(
             properties=properties,
             nodelist=properties["qubits"],
             edgelist=properties["couplers"],
         )
-        with open(solver_efi_cache, "rb") as f:
-            exp_feature_info = pickle.load(f)
         online = False
     if len(exp_feature_info) != 2:
         raise ValueError("Legacy format")
@@ -1434,7 +1410,8 @@ if __name__ == "__main__":
         help="Flux-bias shimming mode: 'None' disables shimming, "
         "'Detector' shims detector qubits to zero measured magnetization, "
         "and 'TDS' alternates detector/target roles for TDS shimming "
-        " (this can cause divergences at smaller than default expected_A frequency).",
+        " (this can cause divergences, particularly for small frequencies and "
+        "when target_c is desynchronized.",
     )
     parser.add_argument(
         "--delay_min",
