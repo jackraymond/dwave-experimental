@@ -591,6 +591,7 @@ def shim_tds_flux_biases(
                 target_c=target_c,
                 detector_lines=detector_lines,
                 use_common_bounds=True,
+                symmetrize_c_bounds=True,
             ),  # For consistency under line swapping.
             num_reads=num_reads,
             x_disable_filtering=True,
