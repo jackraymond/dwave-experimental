@@ -23,6 +23,10 @@ import numpy as np
 import dimod
 from dimod.typing import Variable, Bias
 
+from dwave.experimental.multicolor_anneal import (
+    make_tds_x_anneal_schedules,
+)
+
 __all__ = ["shim_flux_biases", "shim_tds_flux_biases", "qubit_freezeout_alpha_phi"]
 
 
@@ -215,8 +219,8 @@ def shim_flux_biases(
             :func:`.qubit_freezeout_alpha_phi` function. By default, initialized
             using the :func:`.qubit_freezeout_alpha_phi` function. Ignored if
             you specify the ``learning_schedule`` argument.
-        exp_weights_per_update: A weighted sum of magnetizations determines the 
-            update applied to each variable. Shimmed variables are provided as 
+        exp_weights_per_update: A weighted sum of magnetizations determines the
+            update applied to each variable. Shimmed variables are provided as
             the keys, with a sequence of per-experiment weights as the value.
             When provided, keys must match ``shimmed_variables`` and each
             weight sequence must have length
@@ -327,10 +331,17 @@ def shim_flux_biases(
     num_experiments = num_signed_experiments * len(sampling_params_updates)
     if exp_weights_per_update is not None:
         if set(exp_weights_per_update.keys()) != set(shimmed_variables):
-            raise ValueError("exp_weights_per_update should have the same keys as shimmed_variables")
-        if any(len(weights) != num_experiments for weights in exp_weights_per_update.values()):
-            raise ValueError(f"exp_weights_per_update ({len(exp_weights_per_update)}) should match num_experiments ({num_experiments})")
-    
+            raise ValueError(
+                "exp_weights_per_update should have the same keys as shimmed_variables"
+            )
+        if any(
+            len(weights) != num_experiments
+            for weights in exp_weights_per_update.values()
+        ):
+            raise ValueError(
+                f"exp_weights_per_update ({len(exp_weights_per_update)}) should match num_experiments ({num_experiments})"
+            )
+
     use_hypergradient = learning_schedule is None
     if not use_hypergradient:
         num_steps = len(learning_schedule)
@@ -425,9 +436,9 @@ def shim_tds_flux_biases(
     sampler: dimod.Sampler,
     target_lines: set,
     detector_lines: set,
-    *,
     line_assignments: dict,
-    sampling_params: dict[str, Any],
+    *,
+    sampling_params: dict[str, Any] | None = None,
     learning_schedule: Optional[Iterable[float]] = None,
     convergence_test: Optional[Callable] = None,
     symmetrize_experiments: bool = False,
@@ -436,19 +447,22 @@ def shim_tds_flux_biases(
     alpha: Optional[float] = None,
     shimmed_variables: Optional[Iterable[Variable]] = None,
     set_unused_lines_to_zero: bool = True,
-    decouple_tar_and_det: bool = True
+    decouple_tar_and_det: bool = True,
+    exp_feature_line_info: Optional[dict] = None,
+    target_c: Optional[float] = None,
+    num_reads: int = 500,
 ) -> tuple[list[Bias], dict, dict]:
     """Shim flux biases using paired target and detector annealing lines.
 
-    Coupled qubits can act as complimentary detectors. If we assume the required 
+    Coupled qubits can act as complimentary detectors. If we assume the required
     calibration refinement does not depend on the target/detector waveforms
     for example that bias is determined by static flux offsets at a mid
     point of the dynamics, the we can iterate a pair of experiments (role
     of detector) to determine a calibration refinement both of the target
     and detector system.
 
-    We assume flux biases required for symmetric outcomes are independent
-    of the ``x_anneal_schedules``. We can measure the coupled system(s)
+    We assume flux biases required are weakly dependent on the choice
+    of ``x_anneal_schedules``. We can measure the coupled system(s)
     of qubits alternating the role of detector. Assuming
     :math:`d\langle m_D\rangle/d\Phi_D > -\mathrm{sign}(J_{SD})\,d\langle m_D\rangle/d\Phi_S > 0`,
     we can pursue paired experiments and update only detector qubit fluxes
@@ -467,16 +481,23 @@ def shim_tds_flux_biases(
 
     Args:
         bqm: A :class:`~dimod.binary.BinaryQuadraticModel` describing the
-            coupled target–detector system.
+            coupled target-detector(-source) system. A source line is optional.
         sampler: A :class:`~dwave.system.samplers.DWaveSampler`.
         target_lines: Indices of annealing lines whose qubits act as targets
-            (the system whose state we wish to measure).
+            (the system whose state we wish to measure). By default bqm
+            variables on these lines are shimmed, shimmed_variables can be
+            used to narrow the set, and if no target lines are included
+            a simpler shim on detector qubits only is performed.
         detector_lines: Indices of annealing lines whose qubits act as
-            detectors (the qubits whose flux biases are shimmed).
+            detectors. By default all bqm qubits on the detector lines are
+            shimmed, but the set can be reduced using the shim_variables
+            parameter.
         line_assignments: Maps each variable (qubit index) to its annealing
             line index.
         sampling_params: Base sampling parameters passed to the sampler.
-            Must include ``x_anneal_schedules`` and ``x_schedule_delays``.
+            If not specified, then defaults are used. A minimal set of
+            functional parameters should include ``x_anneal_schedules`` and
+            ``num_reads``.
         learning_schedule: An iterable of gradient-descent prefactors for the
             underlying :func:`.shim_flux_biases` call. When not provided, the
             hypergradient-descent method is used.
@@ -504,9 +525,16 @@ def shim_tds_flux_biases(
             ``x_schedule_delays`` to zero.
         decouple_tar_and_det: If ``True``, a copy of ``bqm`` restricted to
             variables assigned to ``target_lines`` or ``detector_lines`` is
-            used for shimming. This decouples the target–detector system
+            used for shimming. This decouples the target-detector system
             from any residual couplings to qubits on other annealing lines.
             The caller's ``bqm`` is not modified. Default is ``True``.
+        exp_feature_line_info: If ``sampling_params`` is not provided, this
+            is used to parameterize ``x_anneal_schedules``.
+        target_c: If ``sampling_params`` is not provided, this is used
+           to parameterize x_anneal_schedules for ``target_lines``.
+        num_reads: If ``sampling_params`` is not provided, this is used to
+            set the default number of reads per iterative stage. Larger
+            values result in lower variance (better) convergence.
     Returns:
         A tuple of three parts mirroring the return value of
         :func:`.shim_flux_biases`:
@@ -518,10 +546,12 @@ def shim_tds_flux_biases(
         3.  History of magnetizations per variable across experiments
             and iterations.
     """
-    if "x_anneal_schedules" not in sampling_params:
-        raise ValueError("x_anneal_schedules should be specified in sampling_params")
-        
-    num_lines = len(sampling_params["x_anneal_schedules"])
+
+    num_lines = (
+        len(sampling_params["x_anneal_schedules"])
+        if exp_feature_line_info is None
+        else len(exp_feature_line_info)
+    )
     if any(
         len(lines) < 1 or not all(0 <= l < num_lines for l in lines)
         for lines in [target_lines, detector_lines]
@@ -529,28 +559,57 @@ def shim_tds_flux_biases(
         raise ValueError(
             "target_lines and detector_lines should be a non-empty iterable of line indices"
         )
-    viable_shimmed_variables = set(v for v in bqm.variables if line_assignments[v] in (detector_lines | target_lines))
+    viable_shimmed_variables = set(
+        v
+        for v in bqm.variables
+        if line_assignments[v] in (detector_lines | target_lines)
+    )
     if shimmed_variables is None:
         shimmed_variables = viable_shimmed_variables
     else:
         shimmed_variables = set(shimmed_variables)
         if not shimmed_variables.issubset(viable_shimmed_variables):
-            raise ValueError("shimmed_variables should be a subset of variables assigned to target_lines or detector_lines")
-    use_target_variables = any(line_assignments[v] in target_lines for v in shimmed_variables)  
+            raise ValueError(
+                "shimmed_variables should be a subset of variables assigned to target_lines or detector_lines"
+            )
+    use_target_variables = any(
+        line_assignments[v] in target_lines for v in shimmed_variables
+    )
     if decouple_tar_and_det:
         bqm = bqm.copy(deep=True)
-        bqm.remove_variables_from(set(bqm.variables).difference(viable_shimmed_variables))
+        bqm.remove_variables_from(
+            set(bqm.variables).difference(viable_shimmed_variables)
+        )
+    if sampling_params is None:
+        # A symmetric default schedule is effective. Dependence on the detailed
+        # form (use of overshoot, etc.) is expected to be a perturbative
+        # effect on the required flux biases.
+        sampling_params = dict(
+            x_anneal_schedules=make_tds_x_anneal_schedules(
+                exp_feature_line_info=exp_feature_line_info,
+                target_lines=target_lines,
+                target_c=target_c,
+                detector_lines=detector_lines,
+                use_common_bounds=True,
+            ),  # For consistency under line swapping.
+            num_reads=num_reads,
+            x_disable_filtering=True,
+        )
+    else:
+        sampling_params = deepcopy(sampling_params)
 
-    if set_unused_lines_to_zero:  
+    if "x_schedule_delays" not in sampling_params:
+        sampling_params["x_schedule_delays"] = [0.0] * num_lines
+
+    if set_unused_lines_to_zero:
         # Detector and target lines are assumed to be present.
         # Other lines are neutralized both with respect to flux_bias
         # signals and phi_cjj.
-        sampling_params = deepcopy(sampling_params) 
         t_max = sampling_params["x_anneal_schedules"][0][-1][0]
         neutral_schedule = [[0.0, 0.0], [t_max, 0.0]]
         for line in set(range(num_lines)) - set(target_lines) - set(detector_lines):
             sampling_params["x_anneal_schedules"][line] = neutral_schedule
-        sampling_params['x_polarizing_schedule'] = [[0.0, 0.0], [t_max, 0.0]]
+        sampling_params["x_polarizing_schedule"] = [[0.0, 0.0], [t_max, 0.0]]
         sampling_params["x_schedule_delays"] = [0.0] * num_lines
     x_schedule_delays_reversed = deepcopy(sampling_params["x_schedule_delays"])
     x_anneal_schedules_reversed = deepcopy(sampling_params["x_anneal_schedules"])
@@ -559,17 +618,21 @@ def shim_tds_flux_biases(
         dl = next(iter(detector_lines))
         for line in target_lines:
             x_schedule_delays_reversed[line] = sampling_params["x_schedule_delays"][dl]
-            x_anneal_schedules_reversed[line] = sampling_params["x_anneal_schedules"][dl]
+            x_anneal_schedules_reversed[line] = sampling_params["x_anneal_schedules"][
+                dl
+            ]
         tl = next(iter(target_lines))
         for line in detector_lines:
             x_schedule_delays_reversed[line] = sampling_params["x_schedule_delays"][tl]
-            x_anneal_schedules_reversed[line] = sampling_params["x_anneal_schedules"][tl]
-    
+            x_anneal_schedules_reversed[line] = sampling_params["x_anneal_schedules"][
+                tl
+            ]
+
         exp_weights_per_update = {
             v: (1.0, 0.0) if line_assignments[v] in detector_lines else (0.0, 1.0)
             for v in shimmed_variables
         }
-    
+
         sampling_params_updates = [
             {
                 "x_anneal_schedules": sampling_params["x_anneal_schedules"],
@@ -584,18 +647,18 @@ def shim_tds_flux_biases(
         # Simple shim of detectors
         sampling_params_updates = None
         exp_weights_per_update = None
-        
+
     return shim_flux_biases(
-            bqm,
-            sampler,
-            sampling_params=sampling_params,
-            learning_schedule=learning_schedule,
-            convergence_test=convergence_test,
-            symmetrize_experiments=symmetrize_experiments,
-            beta_hypergradient=beta_hypergradient,
-            num_steps=num_steps,
-            alpha=alpha,
-            sampling_params_updates=sampling_params_updates,
-            exp_weights_per_update=exp_weights_per_update,
-            shimmed_variables=shimmed_variables,
-        )
+        bqm,
+        sampler,
+        sampling_params=sampling_params,
+        learning_schedule=learning_schedule,
+        convergence_test=convergence_test,
+        symmetrize_experiments=symmetrize_experiments,
+        beta_hypergradient=beta_hypergradient,
+        num_steps=num_steps,
+        alpha=alpha,
+        sampling_params_updates=sampling_params_updates,
+        exp_weights_per_update=exp_weights_per_update,
+        shimmed_variables=shimmed_variables,
+    )

@@ -309,12 +309,13 @@ class FluxBiases(unittest.TestCase):
         bqm = dimod.BinaryQuadraticModel.from_ising({}, {edge: -1})
 
         # Replace assignment by get_properties(qpu) when client available.
+        target_c = 0.37
         n_lines = 3
         polarizing_line_info = {
             "minPolarizingTimeStep": 0.02,
             "depolarizationAnnealScheduleRequiredDelay": 2.0,
         }
-        annealing_line_info = [
+        exp_feature_line_info = [
             {
                 "annealingLine": i,
                 "minAnnealingTimeStep": 0.01,
@@ -328,21 +329,22 @@ class FluxBiases(unittest.TestCase):
             }
             for i in range(n_lines)
         ]
-        exp_feature_info = [polarizing_line_info, annealing_line_info]
+        exp_feature_info = [polarizing_line_info, exp_feature_line_info]
 
         line_assignments = {
-            q: l for l, efi_l in enumerate(exp_feature_info[1]) for q in efi_l["qubits"]
+            q: l
+            for l, efi_l in enumerate(exp_feature_line_info)
+            for q in efi_l["qubits"]
         }
         target_lines = {line_assignments[edge[0]]}
         detector_lines = {line_assignments[edge[1]]}
         x_anneal_schedules, x_polarizing_schedule = make_tds_x_schedules(
             exp_feature_info=exp_feature_info,
             target_lines=target_lines,
-            target_c=0.37,
+            target_c=target_c,
             detector_lines=detector_lines,
             source_lines=set(),
         )
-
         sampling_params = {
             "num_reads": 16,
             "x_anneal_schedules": x_anneal_schedules,
@@ -356,6 +358,8 @@ class FluxBiases(unittest.TestCase):
             detector_lines,
             line_assignments,
             sampling_params,
+            exp_feature_line_info,  # line info part.
+            target_c,
         )
 
     def test_shim_tds_flux_biases_basic_functionality(self):
@@ -369,26 +373,36 @@ class FluxBiases(unittest.TestCase):
             detector_lines,
             line_assignments,
             sampling_params,
+            exp_feature_line_info,
+            target_c,
         ) = self._tds_setup()
 
-        flux_biases, fb_history, mag_history = shim_tds_flux_biases(
-            bqm=bqm,
-            sampler=sampler,
-            target_lines=target_lines,
-            detector_lines=detector_lines,
-            line_assignments=line_assignments,
-            sampling_params=sampling_params,
-            num_steps=2,
-            symmetrize_experiments=False,
-        )
+        cases = [
+            ("explicit_sampling_params", sampling_params),
+            ("default_sampling_params", None),
+        ]
+        for case_name, sp in cases:
+            with self.subTest(case=case_name):
+                flux_biases, fb_history, mag_history = shim_tds_flux_biases(
+                    bqm,
+                    sampler,
+                    target_lines,
+                    detector_lines,
+                    line_assignments,
+                    sampling_params=sp,
+                    num_steps=2,
+                    symmetrize_experiments=False,
+                    exp_feature_line_info=exp_feature_line_info,
+                    target_c=target_c,
+                )
 
-        self.assertIsInstance(flux_biases, list)
-        self.assertEqual(len(flux_biases), sampler.properties["num_qubits"])
-        self.assertSetEqual(set(fb_history.keys()), set(bqm.variables))
-        self.assertSetEqual(set(mag_history.keys()), set(bqm.variables))
-        # ``use_target_variables`` is True: two experiments per step.
-        self.assertTrue(all(len(fb_history[v]) == 3 for v in bqm.variables))
-        self.assertTrue(all(len(mag_history[v]) == 4 for v in bqm.variables))
+                self.assertIsInstance(flux_biases, list)
+                self.assertEqual(len(flux_biases), sampler.properties["num_qubits"])
+                self.assertSetEqual(set(fb_history.keys()), set(bqm.variables))
+                self.assertSetEqual(set(mag_history.keys()), set(bqm.variables))
+                # ``use_target_variables`` is True: two experiments per step.
+                self.assertTrue(all(len(fb_history[v]) == 3 for v in bqm.variables))
+                self.assertTrue(all(len(mag_history[v]) == 4 for v in bqm.variables))
 
     def test_shim_tds_flux_biases_detector_only(self):
         """When only detector variables are shimmed, no target/detector
@@ -400,17 +414,19 @@ class FluxBiases(unittest.TestCase):
             detector_lines,
             line_assignments,
             sampling_params,
+            exp_feature_line_info,
+            target_c,
         ) = self._tds_setup()
         shimmed_variables = {
             v for v in bqm.variables if line_assignments[v] in detector_lines
         }
 
         _, fb_history, mag_history = shim_tds_flux_biases(
-            bqm=bqm,
-            sampler=sampler,
-            target_lines=target_lines,
-            detector_lines=detector_lines,
-            line_assignments=line_assignments,
+            bqm,
+            sampler,
+            target_lines,
+            detector_lines,
+            line_assignments,
             sampling_params=sampling_params,
             num_steps=2,
             symmetrize_experiments=False,
