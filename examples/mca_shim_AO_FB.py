@@ -34,7 +34,6 @@ from dwave.experimental.multicolor_anneal import (
     get_properties,
     SOLVER_FILTER,
     make_tds_graph,
-    qubit_to_Advantage2_annealing_line,
 )
 from dwave.experimental.shimming import shim_flux_biases
 
@@ -178,13 +177,13 @@ def _calc_anneal_offsets(
 def artificial_data(
     delays: np.ndarray,
     A: float,
-    decay_time: float,
+    T2: float = 10.1,
     num_independent_samples: int = float("Inf"),
     prng: np.random.Generator | int | None = None,
-):
+) -> np.ndarray:
     """Create an artificial data set
 
-    y(t) = np.exp(-delays / decay_time) * np.cos(2* np.pi * A * delays)
+    y(t) = np.exp(-delays / T2) * np.cos(2* np.pi * A * delays)
     with variance of (1 - y(t)^2) in the measured state. Given independent
     and identically distributed samples we can model noise as normally
     distributed.
@@ -192,13 +191,13 @@ def artificial_data(
     Args:
         delays: time of measurement
         A: frequency
-        decay_time: exponential envelope time scale
+        T2: exponential envelope time scale
         num_independent_samples: number of samples to model
         prng: pseudo random number generator or seed.
     Returns:
         A model signal:
     """
-    y = np.exp(-delays / decay_time) * np.cos(2 * np.pi * A * delays)
+    y = np.exp(-delays / T2) * np.cos(2 * np.pi * A * delays)
     if num_independent_samples != float("Inf"):
         prng = np.random.default_rng(prng)
         return y + np.sqrt((1 - y**2) / num_independent_samples) * prng.normal(
@@ -217,7 +216,10 @@ def run_parallel_experiment(
 ) -> np.ndarray:
     """Collect detector magnetization for a set of independent embeddings
 
-    See documentation example, here we simply parallelize.
+    Runs a Target-Detector-Source quench experiment on many parallel
+    embeddings with the specified delays applied to detector lines.
+    Sample averaged magnetization are calculated on detected qubits in
+    each embedding and returned as a numpy array.
 
     Args:
         sampler: A parallel embedding composite sampler, wrapping the qpu sampler.
@@ -320,11 +322,11 @@ def main(
     target_c: float = 0.37,
     no_flux_biases: bool = False,
     no_anneal_offsets: bool = False,
-    delay_min: float = 0.005,
-    delay_max: float = 0.015,
+    delay_min: float = 0.01,
+    delay_max: float = 0.025,
     delay_min_fit: float | None = None,
     delay_max_fit: float | None = None,
-    fn_schedule: str = "09-1317A-D_Advantage2_research1_4_annealing_schedule.xlsx",
+    fn_schedule: str = "09-1323A-D_Advantage2_system4_annealing_schedule.xlsx",
 ):
     """Demonstrate t-d-s variability and mitigation strategies
 
@@ -400,13 +402,13 @@ def main(
     if delay_max_fit is None:
         delay_max_fit = delay_max  # Can be automated for SNR in principle.
     elif delay_max_fit > delay_max:
-        raise ValueError("Fit window exceeds data window")
+        raise ValueError("The fit window is incompatible with the data window")
     if delay_min_fit is None:
         delay_min_fit = delay_min  # Can be automated for SNR in principle.
     elif delay_min_fit < delay_min:
-        raise ValueError("Fit window exceeds data window")
+        raise ValueError("The fit window is incompatible with the data window")
     if delay_min_fit > delay_max_fit:
-        raise ValueError("Fit window is empty")
+        raise ValueError("The fit window is empty")
     # Schedule based approximations, target_A and dA/dc are approximated.
     qpu_anneal_schedule = pd.read_excel(
         fn_schedule, sheet_name="Fast-Annealing Schedule"
@@ -469,14 +471,14 @@ def main(
     zephyr_shape = qpu.properties["topology"]["shape"]
     exp_feature_info = get_properties(qpu)
     line_assignments = {
-        n: al_idx for al_idx, al in enumerate(exp_feature_info) for n in al["qubits"]
+        n: al_idx for al_idx, al in enumerate(exp_feature_info[1]) for n in al["qubits"]
     }
-    num_lines = len(exp_feature_info)
+    num_lines = len(exp_feature_info[1])
     cmap = plt.colormaps.get_cmap("plasma")
     line_color = [cmap(i / (num_lines - 1)) for i in range(num_lines)]
 
     x_anneal_schedules = _make_anneal_schedules(
-        exp_feature_info,
+        exp_feature_info[1],
         line_source=line_source,
         line_detector=line_detector,
         target_c=target_c,
@@ -526,7 +528,7 @@ def main(
     embs_by_line = {i: [] for i in range(num_lines)}
     for i, emb in enumerate(embs):
         q = emb[0][0]
-        embs_by_line[qubit_to_Advantage2_annealing_line(q, zephyr_shape)].append(emb)
+        embs_by_line[line_assignments[q]].append(emb)
     embs = [emb for i in range(num_lines) for emb in embs_by_line[i]]
 
     sampler = ParallelEmbeddingComposite(qpu, embeddings=embs)
@@ -538,13 +540,11 @@ def main(
     delays_ns = 5 * np.random.random() + 1000 * delays
     ld = len(delays_ns)
     frequencies = np.arange(ld) / dt / 1000 / ld
-    decay_time_ns = 20
     for idx, A in enumerate([target_Aminus, target_A, target_Aplus]):
         for num_independent_samples in [100, float("Inf")]:
             signal = artificial_data(
                 delays_ns,
                 A,
-                decay_time=decay_time_ns,
                 num_independent_samples=num_independent_samples,
             )
             if num_independent_samples == float("Inf") and idx == 1:
@@ -595,11 +595,10 @@ def main(
                     for e, J in bqm.quadratic.items()
                 },
             )
-            # shimmed_variables = {n for n in bqm_embedded.variables if qubit_to_Advantage2_annealing_line(n, zephyr_shape) == line_detector}
             shimmed_variables = {
                 n
                 for n in bqm_embedded.variables
-                if qubit_to_Advantage2_annealing_line(n, zephyr_shape) == line_detector
+                if line_assignments[n] == line_detector
             }
             # assert set(bqm_embedded.variables).issubset(qpu.nodelist)  # Paranoia
             # assert all(T.has_edge(*e) for e in bqm_embedded.quadratic)  # Paranoia
@@ -656,7 +655,7 @@ def main(
     line_targets = set()
     for idx, emb in enumerate(embs):
         q = emb[0][0]
-        line_target = qubit_to_Advantage2_annealing_line(q, zephyr_shape)
+        line_target = line_assignments[q]
         if line_target not in line_targets:
             plt.plot(
                 delays * 1000,
@@ -706,7 +705,7 @@ def main(
     lines_represented = set()
     for i, emb in enumerate(embs):
         q = emb[0][0]
-        line_target = qubit_to_Advantage2_annealing_line(q, zephyr_shape)
+        line_target = line_assignments[q]
         if line_target in lines_represented:
             label = None
         else:
@@ -766,7 +765,7 @@ def main(
         line_targets = set()
         for i, emb in enumerate(embs):
             q = emb[0][0]
-            line_target = qubit_to_Advantage2_annealing_line(q, zephyr_shape)
+            line_target = line_assignments[q]
             if line_target not in line_targets:
                 plt.plot(
                     delays * 1000,
@@ -805,7 +804,7 @@ def main(
         lines_represented = set()
         for i, emb in enumerate(embs):
             q = emb[0][0]
-            line_target = qubit_to_Advantage2_annealing_line(q, zephyr_shape)
+            line_target = line_assignments[q]
             if line_target in lines_represented:
                 label = None
             else:
@@ -837,7 +836,7 @@ def main(
         lines_represented = set()
         for i, emb in enumerate(embs):
             q = emb[0][0]
-            line_target = qubit_to_Advantage2_annealing_line(q, zephyr_shape)
+            line_target = line_assignments[q]
             if line_target in lines_represented:
                 label = None
             else:
@@ -893,19 +892,19 @@ if __name__ == "__main__":
         "--target_c",
         type=float,
         help="target_c",
-        default=0.37,  # First horizontal qubit line under 6-line control
+        default=0.387,  # 2GHz experiment on Advantage2_research2
     )
     parser.add_argument(
         "--delay_min",
         type=float,
         help="Initial delay time (us) for data collection",
-        default=0.005,  # Sufficient for decoupling from source
+        default=0.01,  # Sufficient for decoupling from source
     )
     parser.add_argument(
         "--delay_max",
         type=float,
         help="Final delay time (us) for data collection",
-        default=0.015,  # Oscillations not completely decayed
+        default=0.025,  # Oscillations not completely decayed
     )
     parser.add_argument(
         "--delay_min_fit",
