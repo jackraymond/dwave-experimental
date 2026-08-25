@@ -66,8 +66,11 @@ def _validate_graph_inputs(source: nx.Graph, target: nx.Graph) -> None:
         ValueError: If either graph is not a supported family graph or is missing 'rows'/'tile'
             metadata, or if the source and target graphs are not of the same family.
     """
-    if not isinstance(source, nx.Graph) or not isinstance(target, nx.Graph):
-        raise TypeError("source and target must both be networkx.Graph instances")
+    if not isinstance(source, nx.Graph):
+        raise TypeError("source must be a networkx.Graph instance")
+
+    if not isinstance(target, nx.Graph):
+        raise TypeError("target must be a networkx.Graph instance")
 
     valid_families = get_args(GraphFamily)
     source_family = source.graph.get("family")
@@ -245,7 +248,7 @@ def _normalize_coordinate(
     t: int,
     add_singleton_nodes: bool = False,
 ) -> tuple[nx.Graph, Callable[[tuple], Hashable]]:
-    """Normalise the source graph to coordinate labels.
+    """Normalize the source graph to coordinate labels.
 
     This function maps graphs to the family-appropriate coordinate system.
 
@@ -266,25 +269,26 @@ def _normalize_coordinate(
         graph_generator = zephyr_graph
         shape = (m, t)
         coords = zephyr_coordinates(*shape)
-        to_linear = coords.zephyr_to_linear
+        coord_to_linear = coords.zephyr_to_linear
         to_tuple = coords.linear_to_zephyr
     elif graph.graph["family"] == "pegasus":
         graph_generator = pegasus_graph
         shape = (m,)
         coords = pegasus_coordinates(*shape)
-        to_linear = coords.pegasus_to_linear
+        coord_to_linear = coords.pegasus_to_linear
         to_tuple = coords.linear_to_pegasus
     elif graph.graph["family"] == "chimera":
         shape = (m, m, t)
         graph_generator = chimera_graph
         coords = chimera_coordinates(*shape)
-        to_linear = coords.chimera_to_linear
+        coord_to_linear = coords.chimera_to_linear
         to_tuple = coords.linear_to_chimera
 
     # As necessary convert edge_list to coordinates and define inversion
     if graph.graph["labels"] == "int":
         edge_list = [(to_tuple(n1), to_tuple(n2)) for n1, n2 in graph.edges()]
         node_list = [to_tuple(n) for n in graph.nodes()]
+        to_linear = coord_to_linear
     elif graph.graph["labels"] == "coordinate":
         edge_list = graph.edges()
         node_list = graph.nodes()
@@ -605,14 +609,14 @@ def _rail_search(
     ksymmetric: bool = False,
     yield_type: YieldType = "edge",
 ) -> dict[tuple, tuple]:
-    r"""Greedy rail-level quotient search
+    r"""Greedy rail-level quotient search for Zephyr, Chimera and Pegasus graphs.
 
     Implementation status: rail-level search supports Zephyr, Chimera, and Pegasus coordinate
     families.
 
     Rails are connected components that consist of connected node sequences of the same orientation:
-    vertical (u=0) or horizontal (u=1) qubits. Removing internal edges (those that connect
-    qubits of differing orientation, rails are disconnected graph components.
+    vertical (u=0) or horizontal (u=1) qubits. After removal of internal edges (those that connect
+    qubits of differing orientation) rails are disconnected graph components.
 
     Rails are indexed by :math:`(u, w, k)`, where ``u`` denotes ``orientation`` and ``w`` denotes
     ``orthogonal_displacement``. For Zephyr these match the standard coordinate system.
@@ -782,10 +786,6 @@ def _rail_search(
             if yield_type in ("node", "rail-edge"):
                 counts = [rail_score[(u, w_t, k_t)] for w_t, k_t in proposals]
             else:
-                # the other only possibility is that yield_type == "edge". The following check is
-                # just to avoid linter complaint about source_external_edges being possibly None.
-                if source_external_edges is None:
-                    raise ValueError("internal error: missing external edge subgraph")
                 counts = [
                     rail_score[(u, w_t, k_t)]
                     + sum(
