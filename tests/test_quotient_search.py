@@ -37,7 +37,7 @@ from dwave.experimental.embedding_methods.quotient_embedding_search import (
 )
 
 
-# To do:
+# Potential enhancement:
 # It would make sense to simplify this function. The two phase process might better capture practical distributions,
 # but is difficult to understand and adds no value in the context of the tests.
 # It would make sense to add the feature that displacements apply to default rails (or relative to a given
