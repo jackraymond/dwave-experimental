@@ -1161,13 +1161,16 @@ def node_labels_by_coloring(graph, as_str: bool = True):
     """Generate node labels from a family-specific graph coloring.
 
     For supported D-Wave graph families, canonical 2-coloring for Chimera and 4-coloring
-    for Pegasus and Zephyr are used.
+    for Pegasus and Zephyr are used. There can be more than 1 valid
+    coloring not related by isomorphism, so failure to find a coloring is
+    not sufficient to rule out any 2 (or 4) colored subgraph isomorphism.
 
     For graphs without recognized D-Wave family metadata, a greedy coloring is used as a
     generic fallback.
 
     Args:
-        graph: Input graph to color.
+        graph: Input graph to color. The family graph metadata is used to select
+            a family-specific coloring method where available.
         as_str: If ``True``, convert color labels to strings before returning. If ``False``,
             preserve the integer color labels. Defaults to ``True``.
 
@@ -1275,7 +1278,9 @@ def find_labeled_subgraph(
     This is a helper function that calls :code:``find_subgraph`` with ``node_labels``.
     Node labeling can significantly accelerate the search when well chosen. The supported
     labeling methods are intended for bipartite graphs and D-Wave source graphs (Zephyr,
-    Pegasus, and Chimera) embedded onto D-Wave target graphs.
+    Pegasus, and Chimera) embedded onto D-Wave target graphs. However,
+    in general it may be necessary to consider uncolored search or several
+    application-specific node labelings to find embeddings.
 
     Args:
         source: Source graph.
@@ -1292,9 +1297,13 @@ def find_labeled_subgraph(
                 by orientation and horizontal displacement. Note that this is
                 only a good choice if the grid parameter (number of rows
                 and columns) of source and target are matched.
-            - 'coloring': According to the 2-coloring of Chimera,
-                or the 4-coloring of Pegasus/Zephyr. If the graph orientation
+            - 'coloring': According to canonical 2-colorings of Chimera,
+                or the 4-coloring of Pegasus/Zephyr. Note that these colorings
+                are not unique. If the graph orientation
                 is unclear, the coloring is assigned by a greedy min-coloring.
+                A greedy coloring is not guaranteed to be unique or optimal.
+                For high performance applications consider direct
+                specification of the coloring via the node_labels argument.
         node_labels: A tuple of dicts mapping nodes in source and target graphs
             to labels.
         **kwargs: Additional keyword arguments to pass to find_subgraph.
