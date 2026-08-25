@@ -1183,7 +1183,7 @@ def node_labels_by_coloring(graph, as_str: bool = True):
             graph, graph.graph["rows"], graph.graph["tile"]
         )
         if graph.graph["family"] == "chimera":
-            col = {n: chimera_two_color(graph) for n in graph.nodes()}
+            col = {n: chimera_two_color(n) for n in graph.nodes()}
         elif graph.graph["family"] == "pegasus":
             col = {n: pegasus_four_color(n) for n in graph.nodes()}
         elif graph.graph["family"] == "zephyr":

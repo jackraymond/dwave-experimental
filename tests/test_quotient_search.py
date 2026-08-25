@@ -19,6 +19,7 @@ from typing import Literal
 import networkx as nx
 import numpy as np
 from dwave.graphs import zephyr_graph, pegasus_graph, chimera_graph
+from dwave_networkx import chimera_two_color, pegasus_four_color, zephyr_four_color
 
 from dwave.experimental.embedding_methods import quotient_search
 from dwave.experimental.embedding_methods.quotient_embedding_search import (
@@ -626,6 +627,15 @@ class TestNodeLabelHelpers(unittest.TestCase):
         for node in graph.nodes():
             self.assertEqual(labels[node], node[0])
 
+    def test_node_labels_by_orientation_chimera_matches_orientation_axis(self):
+        graph = chimera_graph(2, t=2, coordinates=True)
+
+        labels = node_labels_by_orientation(graph, as_str=False)
+
+        self.assertEqual(set(labels), set(graph.nodes()))
+        for node in graph.nodes():
+            self.assertEqual(labels[node], node[2])
+
     def test_node_labels_by_coloring_preserves_original_linear_labels(self):
         graph = zephyr_graph(2, 2, coordinates=False)
 
@@ -633,6 +643,55 @@ class TestNodeLabelHelpers(unittest.TestCase):
 
         self.assertEqual(set(labels), set(graph.nodes()))
         self.assertTrue(set(labels.values()).issubset({0, 1, 2, 3}))
+
+    def test_node_labels_by_coloring_chimera_matches_per_node_two_color(self):
+        # Regression test: coloring must be computed per node, not once for the whole graph.
+        graph = chimera_graph(2, t=2, coordinates=True)
+
+        labels = node_labels_by_coloring(graph, as_str=False)
+
+        self.assertEqual(set(labels), set(graph.nodes()))
+        for node in graph.nodes():
+            self.assertEqual(labels[node], chimera_two_color(node))
+        # Sanity check that the coloring is not degenerate (i.e. not all nodes share one color).
+        self.assertEqual(set(labels.values()), {0, 1})
+
+    def test_node_labels_by_coloring_pegasus_matches_per_node_four_color(self):
+        graph = pegasus_graph(3, coordinates=True)
+
+        labels = node_labels_by_coloring(graph, as_str=False)
+
+        self.assertEqual(set(labels), set(graph.nodes()))
+        for node in graph.nodes():
+            self.assertEqual(labels[node], pegasus_four_color(node))
+
+    def test_node_labels_by_coloring_zephyr_matches_per_node_four_color(self):
+        graph = zephyr_graph(2, 2, coordinates=True)
+
+        labels = node_labels_by_coloring(graph, as_str=False)
+
+        self.assertEqual(set(labels), set(graph.nodes()))
+        for node in graph.nodes():
+            self.assertEqual(labels[node], zephyr_four_color(node))
+
+    def test_node_labels_by_coloring_as_str_converts_labels_to_strings(self):
+        graph = chimera_graph(2, t=2, coordinates=True)
+
+        labels = node_labels_by_coloring(graph, as_str=True)
+
+        self.assertEqual(set(labels), set(graph.nodes()))
+        self.assertTrue(all(isinstance(v, str) for v in labels.values()))
+        self.assertEqual(set(labels.values()), {"0", "1"})
+
+    def test_node_labels_by_coloring_falls_back_to_greedy_color_without_family(self):
+        # A plain graph without D-Wave family metadata should use nx.greedy_color as a fallback.
+        graph = nx.cycle_graph(6)
+
+        labels = node_labels_by_coloring(graph, as_str=False)
+
+        self.assertEqual(set(labels), set(graph.nodes()))
+        expected = nx.greedy_color(graph)
+        self.assertEqual(labels, expected)
 
     def test_node_labels_by_quotient_remaps_zephyr_boundaries(self):
         graph = zephyr_graph(2, 2, coordinates=True)
@@ -644,6 +703,15 @@ class TestNodeLabelHelpers(unittest.TestCase):
         self.assertEqual(labels[(0, 0, 0, 0, 0)], (0, 1, 0, 0))
         self.assertEqual(labels[(0, 4, 0, 0, 0)], (0, 3, 0, 0))
         self.assertEqual(labels[(0, 2, 0, 0, 0)], (0, 2, 0, 0))
+
+    def test_node_labels_by_quotient_chimera_drops_orientation_axis(self):
+        graph = chimera_graph(2, t=2, coordinates=True)
+
+        labels = node_labels_by_quotient(graph, as_str=False)
+
+        self.assertEqual(set(labels), set(graph.nodes()))
+        for node in graph.nodes():
+            self.assertEqual(labels[node], node[:2] + node[3:])
 
     def test_find_labeled_subgraph_returns_identity_on_simple_graph(self):
         source = nx.path_graph(2)
