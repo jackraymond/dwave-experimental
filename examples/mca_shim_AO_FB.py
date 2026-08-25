@@ -764,7 +764,7 @@ def main(
         qpu_fn = f"cache/qpu_{cache_str}.pkl"
     try:
         qpu = DWaveSampler(solver=solver)
-
+        print(f"Solver connected to (check matches schedule file): {qpu.solver.identity}")
         exp_feature_info = get_properties(qpu)
         if cache_str:
             with open(qpu_fn, "wb") as f:
@@ -1059,12 +1059,22 @@ def main(
                     sampling_params["x_schedule_delays"][
                         line
                     ] = 0.1  # Documented limit.
+                # with open('polarized17.pkl', 'wb') as f:
+                #     ising = bqm_embedded.to_ising()
+                #     pickle.dump((sampling_params, ising, qpu.solver.identity, shimmed_variables), f)  # Reinstate for debugging
                 flux_biases, flux_history, mag_history = shim_flux_biases(
                     bqm=bqm_embedded,
                     sampler=qpu,
                     sampling_params=sampling_params,
                     shimmed_variables=shimmed_variables,
                 )
+                # np.save("flux_biases.npy", flux_biases)  # reinstate for debugging.
+                polarization_candidates = [(i, flux_biases[i]) for i in range(len(flux_biases)) if abs(flux_biases[i]) > 1e-4]
+                if polarization_candidates:
+                    print("WARNING: Anomalously large flux biases could indicate "
+                          "a calibration issue, check magnetization plots "
+                          "for evidence of polarization and report bad qubits.")
+                    print(polarization_candidates)
                 sampling_params["x_schedule_delays"] = x_schedule_delays
             else:
                 raise ValueError("Unknown method")
