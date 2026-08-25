@@ -45,7 +45,7 @@ QuotientSearchMetadata = namedtuple(
 )
 
 
-def _expected_coordinate_tuple_len(family: str) -> int:
+def _expected_coordinate_tuple_len(family: GraphFamily) -> int:
     """Return expected coordinate tuple length for a D-Wave graph family."""
     return 5 if family == "zephyr" else 4
 
@@ -69,7 +69,7 @@ def _validate_graph_inputs(source: nx.Graph, target: nx.Graph) -> None:
     if not isinstance(source, nx.Graph) or not isinstance(target, nx.Graph):
         raise TypeError("source and target must both be networkx.Graph instances")
 
-    valid_families = set(get_args(GraphFamily))
+    valid_families = get_args(GraphFamily)
     source_family = source.graph.get("family")
     target_family = target.graph.get("family")
 
@@ -140,12 +140,12 @@ def _extract_graph_properties(
 
 
 def _validate_search_parameters(
-    search_strategy: str,
-    yield_type: str,
+    search_strategy: SearchStrategy,
+    yield_type: YieldType,
     embedding: EmbeddingMapping | None = None,
     *,
-    source_family: str,
-    target_family: str,
+    source_family: GraphFamily,
+    target_family: GraphFamily,
     source_labels: str,
     target_labels: str,
 ) -> None:
