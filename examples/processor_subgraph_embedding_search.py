@@ -43,10 +43,10 @@ def main(
         f"a smaller {family} graph into a larger, defective {family} graph. Since quotient_search "
         " finds embeddings for source and target graphs with the same number of rows, this example "
         "shows how to use find_sublattice_embeddings to search by horizontal "
-        "or vertical displacement of a smaller graph, and how to use"
-        "how to use quotient_search for a subgraph by exploting rail"
+        "or vertical displacement of a smaller graph, and how to use "
+        "how to use quotient_search for a subgraph by exploting rail "
         "automorphisms. "
-        "Note that sublattice search and quotient search are heuristic"
+        "Note that sublattice search and quotient search are heuristic "
         "approaches for which failure is not a guarantee of non-existence,"
         " except in special circumstances."
     )
@@ -68,8 +68,8 @@ def main(
     else:
         raise ValueError("Unknown family")
     print(
-        "A primer: lets first show the graph intended for embedding"
-        "highlighting a set of vertical rails."
+        "A primer: lets first show the graph intended for embedding "
+        "highlighting a set of vertical rails. "
         "Note that rails can be permuted without modify the "
         "graph (an automorphism)"
     )
@@ -325,16 +325,16 @@ def main(
         node_color=node_color,
     )
     print(
-        "Step 9: find_labeled_subgraph is an alternative subgraph"
+        "Step 9: find_labeled_subgraph is an alternative subgraph "
         "automorphism search method that can determine such an embedding. It can "
-        "be accelerated by providing topological information"
-        "In this case, subject to a timeout of 20 seconds we attempt"
+        "be accelerated by providing topological information. "
+        "In this case, subject to a timeout of 20 seconds we attempt "
         "to find an embedding on the same graph, we use the "
-        "insight that vertical/horizontal qubits on the source graph"
-        "should map to vertical/horizontal qubits on the target graph only."
-        "Unlike quotient_search it does not greedily search for an improvement about"
-        "a provided (or defaulted) embedding, and does not return partial solutions."
-        "It is however a complete method, and so if the timeout is set large"
+        "insight that vertical/horizontal qubits on the source graph "
+        "should map to vertical/horizontal qubits on the target graph only. "
+        "Unlike quotient_search it does not greedily search for an improvement about "
+        "a provided (or defaulted) embedding, and does not return partial solutions. "
+        "It is however a complete method, and so if the timeout is set large "
         "enough (and label hinting is not detrimental) it is guaranteed to return "
         "a solution, should it exist, or verify inviability."
     )
