@@ -23,12 +23,14 @@ from dwave.embedding import verify_embedding
 from dwave.graphs import (
     zephyr_coordinates,
     zephyr_graph,
+    zephyr_four_color,
     pegasus_coordinates,
     pegasus_graph,
+    pegasus_four_color,
     chimera_coordinates,
     chimera_graph,
+    chimera_two_color,
 )
-from dwave_networkx import zephyr_four_color, pegasus_four_color, chimera_two_color
 
 __all__ = ["quotient_search", "find_labeled_subgraph"]
 

@@ -18,8 +18,14 @@ from typing import Literal
 
 import networkx as nx
 import numpy as np
-from dwave.graphs import zephyr_graph, pegasus_graph, chimera_graph
-from dwave_networkx import chimera_two_color, pegasus_four_color, zephyr_four_color
+from dwave.graphs import (
+    zephyr_graph,
+    pegasus_graph,
+    chimera_graph,
+    chimera_two_color,
+    pegasus_four_color,
+    zephyr_four_color,
+)
 
 from dwave.experimental.embedding_methods import quotient_search
 from dwave.experimental.embedding_methods.quotient_embedding_search import (
