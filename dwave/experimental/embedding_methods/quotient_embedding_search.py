@@ -32,7 +32,7 @@ from dwave.graphs import (
     chimera_two_color,
 )
 
-__all__ = ["quotient_search", "find_labeled_subgraph"]
+__all__ = ["greedy_quotient_sublattice_mapping", "find_labeled_subgraph"]
 
 YieldType = Literal["node", "edge", "rail-edge"]
 SearchStrategy = Literal["by_quotient_rail", "by_quotient_node", "by_rail_then_node"]
@@ -361,11 +361,11 @@ def _boundary_proposals(
 
     Args:
         u: Zephyr orientation.
-        w: Zephyr column index.
+        w: Zephyr perpendicular block offset.
         tp: Source tile count.
         embedding: Current one-to-one proposal mapping.
-        j: Intra-cell orientation index. Default is 0.
-        z: Row index. Default is 0.
+        j: Zephyr shift identifier. Default is 0.
+        z: Zephyr parallel tile offset. Default is 0.
 
     Returns:
         Available target coordinate nodes, each represented as the 5-tuple
@@ -452,9 +452,10 @@ def _node_search(
         source: Coordinate-labeled graph. 
         target: Coordinate-labeled graph. The family should be matched to the source family.
         embedding: Current mapping, updated in-place.
-        expand_boundary_search: If ``True``, augment boundary columns using the adjacent
-            internal column. Defaults to ``True``. This argument is only applicable to Zephyr
-            graph applications, and is ignored for Pegasus and Chimera graph families.
+        expand_boundary_search: This argument
+            is only applicable to Zephyr graph applications, and is ignored for Pegasus and
+            Chimera graph families. If ``True``, allow mappings from boundary quotient nodes to
+            adjacent (internal perpendicular block offset) nodes. Defaults to ``True``.
         ksymmetric: If ``True``, assume the order of source ``k`` indices is interchangeable
             for scoring and use top-``tp`` selection. Defaults to ``False``.
         yield_type: ``"node"``, ``"edge"``, or ``"rail-edge"``. Defaults to ``"edge"``.
@@ -486,7 +487,8 @@ def _node_search(
         raise ValueError("source and target must have matched square grid parameters")
 
     if expand_boundary_search:
-        # Visit interior columns first so boundary expansion can reuse already-assigned assignments:
+        # Visit interior perpendicular block offsets first so boundary expansion can reuse
+        # already-assigned assignments:
         quotient_node_iterator = itertools.product(
             range(2),
             list(range(1, 2 * m)) + [0, 2 * m],
@@ -537,7 +539,7 @@ def _node_search(
             u, w, j, z = nq
             if w == 0:
                 ksymmetric = False
-                # borrow candidates from adjacent internal column
+                # borrow candidates from adjacent internal perpendicular block offset
                 proposals += list(_boundary_proposals(u, 1, tp, t, embedding, j, z))
             elif w == 2 * m:
                 ksymmetric = False
@@ -657,7 +659,7 @@ def _rail_search(
 
     The search chooses :math:`t_p` target rails for each family :math:`\mathcal{R}^{S}_{u,w}`
     from candidate rails optionally augmented at boundaries (:math:`w=0` and :math:`w=2m`) using
-    adjacent interior columns.
+    adjacent interior perpendicular block offsets.
 
     Let the target rail indexed by :math:`(u, w_t, k_t)` be
 
@@ -711,9 +713,9 @@ def _rail_search(
         source: Coordinate-labeled source graph.
         target: Coordinate-labeled target graph.
         embedding: Current mapping, updated in-place.
-        expand_boundary_search: If ``True``, include adjacent-column rail proposals when
-            :math:`w` is at a boundary. Defaults to ``True``. Boundary expansion is only
-            relevant for Zephyr, it is ignored for other graph families.
+        expand_boundary_search: If ``True``, include adjacent rail
+            proposals when :math:`w` is at a boundary. Defaults to ``True``. Boundary expansion
+            is only relevant for Zephyr, it is ignored for other graph families.
         ksymmetric: If ``True``, treat source :math:`k` order as interchangeable when scoring
             rails. Defaults to ``False``.
         yield_type: ``"node"``, ``"edge"``, or ``"rail-edge"``. Defaults to ``"edge"``.
@@ -870,7 +872,7 @@ def _rail_search(
     return embedding
 
 
-def quotient_search(
+def greedy_quotient_sublattice_mapping(
     source: nx.Graph,
     target: nx.Graph,
     *,
@@ -889,7 +891,8 @@ def quotient_search(
     find a 1:1 embedding where one is viable. A complete method such as
     :code:``minorminer.subgraph.find_subgraph`` may be more appropriate in a scenario such as this,
     especially with customization of parameters to the target families. Similarly, when defect rates
-    are high direct use of :code:``minorminer.find_embedding`` may be a more efficient strategy.
+    are high direct use of the :code:``minorminer.find_embedding`` heuristic may be a more efficient
+    strategy (it will typically return a 1-to-many embedding in such cases).
 
     The quotient construction and greedy update rules in this implementation are based on Zephyr,
     Pegasus or Chimera coordinate blocks presented in the D-Wave networkx format.
@@ -899,11 +902,11 @@ def quotient_search(
     quotient node. Two coarsenings are used:
 
     - **Quotient node** block :math:`(u, w, j, z)`: groups the ``tp`` source nodes that share
-      orientation ``u``, column ``w``, intra-cell index ``j``, and row ``z`` but differ in
-      tile index :math:`k \in \{0, \dots, tp-1\}`.
+      orientation ``u``, perpendicular block offset ``w``, shift identifier ``j``, and parallel
+      tile offset ``z`` but differ in qubit index :math:`k \in \{0, \dots, tp-1\}`.
     - **Quotient rail** block :math:`(u, w)`: groups all :math:`2 m \cdot tp` nodes that share
-      orientation ``u`` and column ``w`` (i.e. a whole Zephyr rail family) before any
-      :math:`(k, j, z)` variation.
+      orientation ``u`` and perpendicular block offset ``w`` (i.e. a whole Zephyr rail family)
+      before any :math:`(k, j, z)` variation.
 
     The function can be used in (1) node-level mode (``search_strategy='by_quotient_node'``), where
     each quotient node block :math:`(u,w,j,z)` is optimized by choosing target candidates with the
@@ -917,10 +920,12 @@ def quotient_search(
         - Pegasus: supports all three strategies in the implemented quotient setting
             (``tp=1``, ``t=2``).
 
-    When ``expand_boundary_search=True``, boundary columns ``w=0`` and ``w=2m`` are augmented using
-    proposals drawn from adjacent internal columns. Whenever this behaviour is activated, nodes from
-    the internal columns are assigned first, so that the unassigned nodes in the internal columns
-    adjacent to the boundaries can be considered as proposals when optimising the boundary columns.
+    When ``expand_boundary_search=True``, boundary perpendicular block offsets ``w=0`` and
+    ``w=2m`` are augmented using proposals drawn from adjacent internal perpendicular block
+    offsets. Whenever this behaviour is activated, nodes from the internal perpendicular block
+    offsets are assigned first, so that the unassigned nodes in the internal perpendicular block
+    offsets adjacent to the boundaries can be considered as proposals when optimising the
+    boundary perpendicular block offsets.
 
     Yield types control what the greedy search tries to preserve. ``"node"`` tries to place as
     many source nodes as possible onto target nodes that actually exist. ``"edge"`` tries to
@@ -1003,7 +1008,7 @@ def quotient_search(
 
         .. code-block:: python
 
-            emb, metadata = quotient_search(source, target, yield_type="edge")
+            emb, metadata = greedy_quotient_sublattice_mapping(source, target, yield_type="edge")
             if metadata.final_num_yielded < metadata.max_num_yielded:
                 import minorminer
 
@@ -1238,7 +1243,7 @@ def node_labels_by_quotient(
     """Generate quotient graph labels for nodes based on graph family and structure.
 
     This function assigns quotient labels to nodes. See
-    :func:`quotient_search` for a description of the quotient graph.
+    :func:`greedy_quotient_sublattice_mapping` for a description of the quotient graph.
 
     For Zephyr graphs with ``expand_boundary_search=True``, boundary quotient
     nodes are collapsed with adjacent internal nodes, since
@@ -1246,8 +1251,9 @@ def node_labels_by_quotient(
 
     Args:
         graph: A Chimera, Pegasus or Zephyr NetworkX graph.
-        expand_boundary_search: If ``True`` and the graph family is ``"zephyr"``, boundary columns
-            are remapped to adjacent interior columns. Defaults to ``True``.
+        expand_boundary_search: If ``True`` and the graph family is ``"zephyr"``, boundary
+            quotient nodes are remapped to adjacent (interior perpendicular block
+            offset) nodes. Defaults to ``True``.
         as_str: If ``True``, labels are converted to strings. If ``False``, labels remain
             as tuples. Defaults to ``True``.
 
@@ -1267,7 +1273,7 @@ def node_labels_by_quotient(
             graph, graph.graph["rows"], graph.graph["tile"]
         )
         if graph.graph["family"] == "chimera":
-            col = {to_source(n): n[:2] + n[3:] for n in graph.nodes()}
+            col = {to_source(n): n[:3] for n in graph.nodes()}
         elif graph.graph["family"] == "pegasus":
             col = {to_source(n): n[:2] + (n[2] // 2,) + n[3:] for n in graph.nodes()}
         elif graph.graph["family"] == "zephyr":
@@ -1276,7 +1282,8 @@ def node_labels_by_quotient(
 
                 wmap = {0: 1, 2 * m: 2 * m - 1}
                 col = {
-                    to_source(n): n[:1] + (wmap.get(n[1], n[1]),) + n[3:] for n in graph.nodes()
+                    to_source(n): n[:1] + (wmap.get(n[1], n[1]),) + n[3:]
+                    for n in graph.nodes()
                 }
             else:
                 col = {to_source(n): n[:2] + n[3:] for n in graph.nodes()}

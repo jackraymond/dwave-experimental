@@ -27,7 +27,7 @@ from dwave.graphs import (
     zephyr_four_color,
 )
 
-from dwave.experimental.embedding_methods import quotient_search
+from dwave.experimental.embedding_methods import greedy_quotient_sublattice_mapping
 from dwave.experimental.embedding_methods.quotient_embedding_search import (
     QuotientSearchMetadata,
     find_labeled_subgraph,
@@ -197,7 +197,7 @@ class TestYieldImprovement(unittest.TestCase):
         source = self.sources[family]
         target = self.targets[family]
 
-        sub_emb, metadata = quotient_search(
+        sub_emb, metadata = greedy_quotient_sublattice_mapping(
             source,
             target,
             yield_type=yield_type,
@@ -263,7 +263,7 @@ class TestMetadataConsistency(unittest.TestCase):
         """max >= final >= starting >= 0 for all yield types."""
         for yt in ("node", "edge", "rail-edge"):
             with self.subTest(yield_type=yt):
-                _sub, metadata = quotient_search(
+                _sub, metadata = greedy_quotient_sublattice_mapping(
                     self.source,
                     self.target,
                     yield_type=yt,
@@ -283,7 +283,7 @@ class TestMetadataConsistency(unittest.TestCase):
         full_target = zephyr_graph(6, 4, coordinates=True)
         for yt in ("node", "edge"):
             with self.subTest(yield_type=yt):
-                _sub, metadata = quotient_search(
+                _sub, metadata = greedy_quotient_sublattice_mapping(
                     self.source,
                     full_target,
                     yield_type=yt,
@@ -294,7 +294,7 @@ class TestMetadataConsistency(unittest.TestCase):
                 self.assertEqual(metadata.final_num_yielded, metadata.max_num_yielded)
 
     def test_return_is_two_tuple(self):
-        sub_emb, metadata = quotient_search(self.source, self.target)
+        sub_emb, metadata = greedy_quotient_sublattice_mapping(self.source, self.target)
         self.assertIsInstance(sub_emb, dict)
         self.assertIsInstance(metadata, QuotientSearchMetadata)
 
@@ -310,11 +310,11 @@ class TestGraphInputValidation(unittest.TestCase):
         with self.assertRaisesRegex(
             TypeError, r"source must be a networkx.Graph instance"
         ):
-            quotient_search("not_a_graph", self.target)  # type: ignore
+            greedy_quotient_sublattice_mapping("not_a_graph", self.target)  # type: ignore
         with self.assertRaisesRegex(
             TypeError, r"target must be a networkx.Graph instance"
         ):
-            quotient_search(self.source, 42)  # type: ignore
+            greedy_quotient_sublattice_mapping(self.source, 42)  # type: ignore
 
     def test_source_or_target_wrong_family_raises_value_error(self):
         bad_graph = self.source.copy()
@@ -322,11 +322,11 @@ class TestGraphInputValidation(unittest.TestCase):
         with self.assertRaisesRegex(
             ValueError, r"target graph should be the same family as the source graph"
         ):
-            quotient_search(bad_graph, self.target)
+            greedy_quotient_sublattice_mapping(bad_graph, self.target)
         with self.assertRaisesRegex(
             ValueError, r"target graph should be the same family as the source graph"
         ):
-            quotient_search(self.source, bad_graph)
+            greedy_quotient_sublattice_mapping(self.source, bad_graph)
 
     def test_source_or_target_missing_rows_metadata_raises_value_error(self):
         graph_no_rows = self.source.copy()
@@ -334,11 +334,11 @@ class TestGraphInputValidation(unittest.TestCase):
         with self.assertRaisesRegex(
             ValueError, r"source graph is missing required 'rows'"
         ):
-            quotient_search(graph_no_rows, self.target)
+            greedy_quotient_sublattice_mapping(graph_no_rows, self.target)
         with self.assertRaisesRegex(
             ValueError, r"target graph is missing required 'rows'"
         ):
-            quotient_search(self.source, graph_no_rows)
+            greedy_quotient_sublattice_mapping(self.source, graph_no_rows)
 
     def test_source_or_target_missing_tile_metadata_raises_value_error(self):
         graph_no_tile = self.source.copy()
@@ -346,11 +346,11 @@ class TestGraphInputValidation(unittest.TestCase):
         with self.assertRaisesRegex(
             ValueError, r"source graph is missing required 'tile'"
         ):
-            quotient_search(graph_no_tile, self.target)
+            greedy_quotient_sublattice_mapping(graph_no_tile, self.target)
         with self.assertRaisesRegex(
             ValueError, r"target graph is missing required 'tile'"
         ):
-            quotient_search(self.source, graph_no_tile)
+            greedy_quotient_sublattice_mapping(self.source, graph_no_tile)
 
     def test_source_or_target_missing_labels_metadata_raises_value_error(self):
         graph_no_labels = self.source.copy()
@@ -358,18 +358,18 @@ class TestGraphInputValidation(unittest.TestCase):
         with self.assertRaisesRegex(
             ValueError, r"source graph is missing required 'labels'"
         ):
-            quotient_search(graph_no_labels, self.target)
+            greedy_quotient_sublattice_mapping(graph_no_labels, self.target)
         with self.assertRaisesRegex(
             ValueError, r"target graph is missing required 'labels'"
         ):
-            quotient_search(self.source, graph_no_labels)
+            greedy_quotient_sublattice_mapping(self.source, graph_no_labels)
 
     def test_incompatible_m_raises_value_error(self):
         target_diff_m = zephyr_graph(5, 4, coordinates=True)
         with self.assertRaisesRegex(
             ValueError, r"source and target must have matched square grid parameters"
         ):
-            quotient_search(self.source, target_diff_m)
+            greedy_quotient_sublattice_mapping(self.source, target_diff_m)
 
     def test_target_tile_less_than_source_tile_raises_value_error(self):
         small_tile_target = self.target.copy()
@@ -377,7 +377,7 @@ class TestGraphInputValidation(unittest.TestCase):
         with self.assertRaisesRegex(
             ValueError, r"target tile count must be >= source tile count"
         ):
-            quotient_search(self.source, small_tile_target)
+            greedy_quotient_sublattice_mapping(self.source, small_tile_target)
 
     def test_non_integer_rows_metadata_raises_type_error(self):
         bad_source = self.source.copy()
@@ -385,7 +385,7 @@ class TestGraphInputValidation(unittest.TestCase):
         with self.assertRaisesRegex(
             TypeError, r"graph 'rows' metadata must be an integer"
         ):
-            quotient_search(bad_source, self.target)
+            greedy_quotient_sublattice_mapping(bad_source, self.target)
 
     def test_non_positive_rows_metadata_raises_value_error(self):
         bad_source = self.source.copy()
@@ -393,7 +393,7 @@ class TestGraphInputValidation(unittest.TestCase):
         with self.assertRaisesRegex(
             ValueError, r"graph 'rows' metadata must be positive"
         ):
-            quotient_search(bad_source, self.target)
+            greedy_quotient_sublattice_mapping(bad_source, self.target)
 
 
 class TestSearchParameterValidation(unittest.TestCase):
@@ -405,13 +405,13 @@ class TestSearchParameterValidation(unittest.TestCase):
 
     def test_invalid_search_strategy_raises_value_error(self):
         with self.assertRaisesRegex(ValueError, r"search_strategy must be one of"):
-            quotient_search(
+            greedy_quotient_sublattice_mapping(
                 self.source, self.target, search_strategy="unknown_strategy"  # type: ignore
             )
 
     def test_invalid_yield_type_raises_value_error(self):
         with self.assertRaisesRegex(ValueError, r"yield_type must be one of"):
-            quotient_search(
+            greedy_quotient_sublattice_mapping(
                 self.source, self.target, yield_type="invalid"  # type: ignore
             )
 
@@ -419,7 +419,7 @@ class TestSearchParameterValidation(unittest.TestCase):
         with self.assertRaisesRegex(
             TypeError, r"embedding must be a dictionary when provided"
         ):
-            quotient_search(
+            greedy_quotient_sublattice_mapping(
                 self.source, self.target, embedding=[1, 2, 3]  # type: ignore
             )
 
@@ -429,7 +429,7 @@ class TestSearchParameterValidation(unittest.TestCase):
         with self.assertRaisesRegex(
             ValueError, r"source coordinate keys must be 5-tuples for family 'zephyr'"
         ):
-            quotient_search(
+            greedy_quotient_sublattice_mapping(
                 self.source, self.target, embedding=bad_embedding  # type: ignore
             )
 
@@ -441,7 +441,7 @@ class TestSearchParameterValidation(unittest.TestCase):
         with self.assertRaisesRegex(
             ValueError, r"source coordinate keys must be 5-tuples for family 'zephyr'"
         ):
-            quotient_search(
+            greedy_quotient_sublattice_mapping(
                 self.source, self.target, embedding=bad_embedding  # type: ignore
             )
 
@@ -452,7 +452,7 @@ class TestSearchParameterValidation(unittest.TestCase):
             ValueError,
             r"embedding values must be singleton tuples representing node chains",
         ):
-            quotient_search(
+            greedy_quotient_sublattice_mapping(
                 self.source, self.target, embedding=bad_embedding  # type: ignore
             )
 
@@ -463,7 +463,7 @@ class TestSearchParameterValidation(unittest.TestCase):
             ValueError,
             r"embedding values must be singleton tuples representing node chains",
         ):
-            quotient_search(
+            greedy_quotient_sublattice_mapping(
                 self.source, self.target, embedding=bad_embedding  # type: ignore
             )
 
@@ -473,7 +473,7 @@ class TestSearchParameterValidation(unittest.TestCase):
         with self.assertRaisesRegex(
             ValueError, r"target coordinate nodes must be 5-tuples for family 'zephyr'"
         ):
-            quotient_search(
+            greedy_quotient_sublattice_mapping(
                 self.source, self.target, embedding=bad_embedding  # type: ignore
             )
 
@@ -490,7 +490,7 @@ class TestSearchParameterValidation(unittest.TestCase):
             ValueError,
             r"embedding must be a one-to-one mapping.*duplicate target nodes",
         ):
-            quotient_search(
+            greedy_quotient_sublattice_mapping(
                 self.source, self.target, embedding=bad_embedding  # type: ignore
             )
 
@@ -504,7 +504,9 @@ class TestSearchParameterValidation(unittest.TestCase):
         }
         # Should not raise any errors
         try:
-            quotient_search(source, target, embedding=valid_embedding)
+            greedy_quotient_sublattice_mapping(
+                source, target, embedding=valid_embedding
+            )
         except (TypeError, ValueError) as e:
             self.fail(f"Valid embedding raised unexpected error: {e}")
 
@@ -517,14 +519,14 @@ class TestLabelingSchemeErrors(unittest.TestCase):
         source.graph["labels"] = "custom_scheme"
         target = zephyr_graph(6, 4, coordinates=True)
         with self.assertRaisesRegex(ValueError, r"unknown labeling scheme"):
-            quotient_search(source, target)
+            greedy_quotient_sublattice_mapping(source, target)
 
     def test_unknown_target_labels_raises_value_error(self):
         source = zephyr_graph(6, 2, coordinates=True)
         target = zephyr_graph(6, 4, coordinates=True)
         target.graph["labels"] = "custom_scheme"
         with self.assertRaisesRegex(ValueError, r"unknown labeling scheme"):
-            quotient_search(source, target)
+            greedy_quotient_sublattice_mapping(source, target)
 
 
 class TestNodeLabelHelpers(unittest.TestCase):
@@ -616,14 +618,14 @@ class TestNodeLabelHelpers(unittest.TestCase):
         self.assertEqual(labels[(0, 4, 0, 0, 0)], (0, 3, 0, 0))
         self.assertEqual(labels[(0, 2, 0, 0, 0)], (0, 2, 0, 0))
 
-    def test_node_labels_by_quotient_chimera_drops_orientation_axis(self):
+    def test_node_labels_by_quotient_chimera_drops_qubit_index(self):
         graph = chimera_graph(2, t=2, coordinates=True)
 
         labels = node_labels_by_quotient(graph, as_str=False)
 
         self.assertEqual(set(labels), set(graph.nodes()))
         for node in graph.nodes():
-            self.assertEqual(labels[node], node[:2] + node[3:])
+            self.assertEqual(labels[node], node[:3])
 
     def test_find_labeled_subgraph_returns_identity_on_simple_graph(self):
         source = nx.path_graph(2)

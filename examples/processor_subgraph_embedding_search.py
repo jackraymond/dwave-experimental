@@ -23,7 +23,10 @@ import numpy as np
 from minorminer import find_embedding
 from minorminer.utils.parallel_embeddings import find_sublattice_embeddings
 
-from dwave.experimental.embedding_methods import quotient_search, find_labeled_subgraph
+from dwave.experimental.embedding_methods import (
+    greedy_quotient_sublattice_mapping,
+    find_labeled_subgraph,
+)
 from dwave.experimental.embedding_methods.quotient_embedding_search import _rail_nodes
 
 
@@ -40,12 +43,13 @@ def main(
     rng = np.random.default_rng(seed)
 
     print(
-        f"This example demonstrates how to use quotient_search to find a full-yield embedding of "
-        f"a smaller {family} graph into a larger, defective {family} graph. Since quotient_search "
+        f"This example demonstrates how to use greedy_quotient_sublattice_mapping to find a "
+        f"full-yield embedding of a smaller {family} graph into a larger, defective {family} "
+        f"graph. Since greedy_quotient_sublattice_mapping "
         " finds embeddings for source and target graphs with the same number of rows, this example "
         "shows how to use find_sublattice_embeddings to search by horizontal "
         "or vertical displacement of a smaller graph, and how to use "
-        "how to use quotient_search for a subgraph by exploting rail "
+        "how to use greedy_quotient_sublattice_mapping for a subgraph by exploting rail "
         "automorphisms. "
         "Note that sublattice search and quotient search are heuristic "
         "approaches for which failure is not a guarantee of non-existence,"
@@ -210,7 +214,7 @@ def main(
     ]
     target.remove_nodes_from(removed_nodes2)
 
-    # Relabel to canonical m_s coordinates before quotient_search.
+    # Relabel to canonical m_s coordinates before greedy_quotient_sublattice_mapping.
     sublattice_nodes = set(tile_embedding.values())
     target_sub = target.subgraph(sublattice_nodes).copy()
     inv_map = {
@@ -245,10 +249,12 @@ def main(
         f"of {source.number_of_nodes()} nodes and {source.number_of_edges()} edges may be feasible."
     )
 
-    emb, metadata = quotient_search(source, target_sub, yield_type="edge")
+    emb, metadata = greedy_quotient_sublattice_mapping(
+        source, target_sub, yield_type="edge"
+    )
 
     print(
-        "Step 7: Run quotient_search on the canonical sublattice. It successfully placed "
+        "Step 7: Run greedy_quotient_sublattice_mapping on the canonical sublattice. It successfully placed "
         f"{metadata.final_num_yielded} of {metadata.max_num_yielded} source edges."
     )
 
@@ -333,7 +339,7 @@ def main(
         "to find an embedding on the same graph, we use the "
         "insight that vertical/horizontal qubits on the source graph "
         "should map to vertical/horizontal qubits on the target graph only. "
-        "Unlike quotient_search it does not greedily search for an improvement about "
+        "Unlike greedy_quotient_sublattice_mapping it does not greedily search for an improvement about "
         "a provided (or defaulted) embedding, and does not return partial solutions. "
         "It is however a complete method, and so if the timeout is set large "
         "enough (and label hinting is not detrimental) it is guaranteed to return "
