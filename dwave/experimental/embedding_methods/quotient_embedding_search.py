@@ -51,15 +51,15 @@ def _expected_coordinate_tuple_len(family: GraphFamily) -> int:
 
 
 def _validate_graph_inputs(source: nx.Graph, target: nx.Graph) -> None:
-    """Validate that source and target are supported D-Wave NetworkX graphs.
+    """Validate that source and target are supported NetworkX graphs.
 
     Both source and target graphs must be networkx graph instances with a ``'family'`` metadata
     key set to one of ``'zephyr'``, ``'pegasus'``, or ``'chimera'``. Each graph must also contain
     ``'rows'``, ``'tile'`` and ``'labels'`` metadata keys.
 
     Args:
-        source: Source D-Wave graph.
-        target: Target D-Wave graph.
+        source: Source graph.
+        target: Target graph.
 
     Raises:
         TypeError: If inputs are not NetworkX graphs.
@@ -265,39 +265,39 @@ def _normalize_coordinate(
     Raises:
         ValueError: If source labels are unsupported.
     """
-    if graph.graph["family"] == "zephyr":
-        graph_generator = zephyr_graph
-        shape = (m, t)
-        coords = zephyr_coordinates(*shape)
-        coord_to_linear = coords.zephyr_to_linear
-        to_tuple = coords.linear_to_zephyr
-    elif graph.graph["family"] == "pegasus":
-        graph_generator = pegasus_graph
-        shape = (m,)
-        coords = pegasus_coordinates(*shape)
-        coord_to_linear = coords.pegasus_to_linear
-        to_tuple = coords.linear_to_pegasus
-    elif graph.graph["family"] == "chimera":
-        shape = (m, m, t)
-        graph_generator = chimera_graph
-        coords = chimera_coordinates(*shape)
-        coord_to_linear = coords.chimera_to_linear
-        to_tuple = coords.linear_to_chimera
+    match graph.graph["family"]:
+        case "zephyr"
+            graph_generator = zephyr_graph
+            shape = (m, t)
+            coords = zephyr_coordinates(*shape)
+            coord_to_linear = coords.zephyr_to_linear
+            to_tuple = coords.linear_to_zephyr
+        case "pegasus":
+            graph_generator = pegasus_graph
+            shape = (m,)
+            coords = pegasus_coordinates(*shape)
+            coord_to_linear = coords.pegasus_to_linear
+            to_tuple = coords.linear_to_pegasus
+        case "chimera":
+            shape = (m, m, t)
+            graph_generator = chimera_graph
+            coords = chimera_coordinates(*shape)
+            coord_to_linear = coords.chimera_to_linear
+            to_tuple = coords.linear_to_chimera
 
     # As necessary convert edge_list to coordinates and define inversion
-    if graph.graph["labels"] == "int":
-        edge_list = [(to_tuple(n1), to_tuple(n2)) for n1, n2 in graph.edges()]
-        node_list = [to_tuple(n) for n in graph.nodes()]
-        to_linear = coord_to_linear
-    elif graph.graph["labels"] == "coordinate":
-        edge_list = graph.edges()
-        node_list = graph.nodes()
+    match graph.graph["labels"]
+        case "int":
+            edge_list = [(to_tuple(n1), to_tuple(n2)) for n1, n2 in graph.edges()]
+            node_list = [to_tuple(n) for n in graph.nodes()]
+            to_linear = coord_to_linear
+        case "coordinate":
+            edge_list = graph.edges()
+            node_list = graph.nodes()
+            to_linear: Callable[[tuple], tuple]] = lambda n: n
+        case _:
+            raise ValueError("source graph has unknown labeling scheme")
 
-        def to_linear(n: tuple) -> tuple:
-            return n
-
-    else:
-        raise ValueError("source graph has unknown labelling scheme")
     generator_args = dict(coordinates=True, node_list=node_list, edge_list=edge_list)
     if add_singleton_nodes:
         if graph.graph["family"] == "pegasus":
@@ -371,9 +371,9 @@ def _node_search(
     ksymmetric: bool = False,
     yield_type: YieldType = "edge",
 ) -> dict[tuple, tuple]:
-    r"""Greedy node-level quotient search
+    r"""Greedy node-level quotient search.
 
-    subgraph isomorphisms (1:1 embeddings) are searched subject to the restriction that nodes in the
+    Subgraph isomorphisms (1:1 embeddings) are searched subject to the restriction that nodes in the
     source are mapped to nodes in the target aligned subject to the constraint of matched quotient
     graph structure.
 
@@ -860,9 +860,9 @@ def quotient_search(
 ) -> tuple[EmbeddingMapping, QuotientSearchMetadata]:
     r"""Compute a high-yield quotient embedding for supported D-Wave graph families.
 
-    This routine starts from a source graph with ``m`` rows and ``tp`` tiles,
-    and maps it into a target graph with the same ``m`` rows and ``t >= tp``
-    tiles. It is designed for defective targets where a direct identity map may lose
+    This routine starts from a source graph with ``m`` rows and tile size ``tp``,
+    and maps it into a target graph with the same ``m`` rows and tile size ``t >= tp``.
+    It is designed for defective targets where a direct identity map may lose
     nodes or edges. Since a greedy method is used for embedding search, it is possible it fails to
     find a 1:1 embedding where one is viable. A complete method such as
     :code:``minorminer.subgraph.find_subgraph`` may be more appropriate in a scenario such as this,
@@ -1198,10 +1198,11 @@ def node_labels_by_coloring(graph, as_str: bool = True):
         col = {to_source(n): color for n, color in col.items()}
     else:
         col = nx.greedy_color(graph)
+
     if as_str:
         return {k: str(v) for k, v in col.items()}
-    else:
-        return col
+
+    return col
 
 
 def node_labels_by_quotient(

@@ -2,7 +2,7 @@
 features:
   - |
     Support quotient search for Chimera and Pegasus graph (expanding existing
-    support implemented for zephyr).
+    support implemented for Zephyr).
 upgrade:
   - |
     Show plots as part of the quotient search example.
