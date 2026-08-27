@@ -19,7 +19,7 @@ import numpy as np
 import networkx as nx
 
 from dwave.system.testing import MockDWaveSampler
-from dwave_networkx import chimera_graph, pegasus_graph, zephyr_graph
+from dwave.graphs import chimera_graph, pegasus_graph, zephyr_graph
 
 from dwave.experimental.automorphism import *
 
@@ -459,24 +459,24 @@ class TestAutomorphismComposite(unittest.TestCase):
 
         pass
 
-    def test_dnx_graph_generators(self):
-        dnx_shapes = {
+    def test_graph_generators(self):
+        shapes = {
             "chimera": [(1, 1, 1), (2, 2, 4), (3, 1, 3)],
             "zephyr": [(1, 1), (2, 3)],
             "pegasus": [(2,), (3,), (4,)],
         }
-        for dnx_type, shapes in dnx_shapes.items():
-            if dnx_type == "chimera":
+        for topology, shapes in shapes.items():
+            if topology == "chimera":
                 make_graph = chimera_graph
                 make_generators = chimera_generators
-            elif dnx_type == "pegasus":
+            elif topology == "pegasus":
                 make_graph = pegasus_graph
                 make_generators = pegasus_generators
-            elif dnx_type == "zephyr":
+            elif topology == "zephyr":
                 make_graph = zephyr_graph
                 make_generators = zephyr_generators
             else:
-                raise ValueError("Unknown dnx graph type")
+                raise ValueError("Unknown graph type")
             for shape in shapes:
                 G = make_graph(*shape)
                 rep = schreier_rep(G)

@@ -20,7 +20,7 @@ vertex orbits.
 from typing import Optional
 import argparse
 
-import dwave_networkx as dnx
+from dwave.graphs import chimera_graph
 
 from dwave.experimental.automorphism import schreier_rep, array_to_cycle
 
@@ -31,7 +31,7 @@ def main(
     silent: bool,
 ):
 
-    graph = dnx.chimera_graph(chimera_unit_cells)
+    graph = chimera_graph(chimera_unit_cells)
     result = schreier_rep(graph, num_samples=num_samples)
 
     #print the elements of the group vector in cycle notation

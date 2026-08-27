@@ -17,7 +17,7 @@ import unittest
 
 import networkx as nx
 import numpy as np
-from dwave_networkx import zephyr_graph
+from dwave.graphs import zephyr_graph
 
 from dwave.experimental.embedding_methods import zephyr_quotient_search
 from dwave.experimental.embedding_methods.zephyr_quotient_embedding_search import \
