@@ -14,7 +14,7 @@
 
 import itertools
 from collections import namedtuple
-from typing import Callable, Hashable, Literal, get_args
+from typing import Callable, Hashable, Iterator, Literal, get_args
 
 from minorminer.subgraph import find_subgraph
 import networkx as nx
@@ -247,17 +247,22 @@ def _normalize_coordinate(
     m: int,
     t: int,
     add_singleton_nodes: bool = False,
+    graph_family: GraphFamily | None = None,
+    graph_labels: Literal["coordinate", "int"] | None = None,
 ) -> tuple[nx.Graph, Callable[[tuple], Hashable]]:
-    """Normalize the source graph to coordinate labels.
+    """Normalize the source graph to a dwave.graph compatible family with canonical coordinates.
 
     This function maps graphs to the family-appropriate coordinate system.
 
     Args:
-        graph: D-Wave NetworkX compatible graph, either linear or coordinate labelled.
+        graph: NetworkX graph, either linear or coordinate labelled.
         m: Number of rows (must be consistent with ``graph``).
         t: Source tile count (must be consistent with ``graph``).
         add_singleton_nodes: If ``True``, add any missing nodes in the coordinate-labelled
             source graph as singleton nodes.
+        graph_family: Optional graph family. If not provided, it is inferred from the graph metadata.
+        graph_labels: Final graph label preference (int or coordinate).
+            If not provided, it is inferred from the graph metadata.
     Returns:
         coordinate-labelled (tuple) source graph and a callable that maps coordinate nodes
         back to the original source labelling space
@@ -265,8 +270,13 @@ def _normalize_coordinate(
     Raises:
         ValueError: If source labels are unsupported.
     """
-    match graph.graph["family"]:
-        case "zephyr"
+    if graph_family is None:
+        graph_family = graph.graph["family"]
+    if graph_labels is None:
+        graph_labels = graph.graph["labels"]
+
+    match graph_family:
+        case "zephyr":
             graph_generator = zephyr_graph
             shape = (m, t)
             coords = zephyr_coordinates(*shape)
@@ -284,17 +294,23 @@ def _normalize_coordinate(
             coords = chimera_coordinates(*shape)
             coord_to_linear = coords.chimera_to_linear
             to_tuple = coords.linear_to_chimera
-
+        case _:
+            raise ValueError(f"Unknown graph family {graph_family}")
     # As necessary convert edge_list to coordinates and define inversion
-    match graph.graph["labels"]
+    match graph_labels:
         case "int":
+            if not to_tuple:
+                raise ValueError(
+                    "source graph has unknown labeling scheme for family "
+                    f"{graph.graph['family']}"
+                )
             edge_list = [(to_tuple(n1), to_tuple(n2)) for n1, n2 in graph.edges()]
             node_list = [to_tuple(n) for n in graph.nodes()]
             to_linear = coord_to_linear
         case "coordinate":
             edge_list = graph.edges()
             node_list = graph.nodes()
-            to_linear: Callable[[tuple], tuple]] = lambda n: n
+            to_linear: Callable[[tuple], tuple] = lambda n: n
         case _:
             raise ValueError("source graph has unknown labeling scheme")
 
@@ -479,38 +495,39 @@ def _node_search(
         )
         ksymmetric_original = ksymmetric
 
-        def _quotient_to_var(nq, k):
+        def _quotient_to_var(nq: tuple, k: int) -> tuple:
             return nq[:2] + (k,) + nq[2:]
 
     else:
-        if source.graph["family"] == "zephyr":
-            quotient_node_iterator = itertools.product(
-                range(2), range(2 * m + 1), range(2), range(m)
-            )
+        match source.graph["family"]:
+            case "zephyr":
+                quotient_node_iterator = itertools.product(
+                    range(2), range(2 * m + 1), range(2), range(m)
+                )
 
-            def _quotient_to_var(nq, k):
-                return nq[:2] + (k,) + nq[2:]
+                def _quotient_to_var(nq: tuple, k: int) -> tuple:
+                    return nq[:2] + (k,) + nq[2:]
 
-        elif source.graph["family"] == "pegasus":
-            quotient_node_iterator = itertools.product(
-                range(2), range(6 * m), range(m - 1)
-            )
+            case "pegasus":
+                quotient_node_iterator = itertools.product(
+                    range(2), range(6 * m), range(m - 1)
+                )
 
-            def _quotient_to_var(nq, k):
-                u, w, z = nq
-                return (u, w // 6, 2 * (w % 6) + k, z)
+                def _quotient_to_var(nq: tuple, k: int) -> tuple:
+                    u, w, z = nq
+                    return (u, w // 6, 2 * (w % 6) + k, z)
 
-        elif source.graph["family"] == "chimera":
-            quotient_node_iterator = itertools.product(
-                range(2), range(m), range(m)
-            )  # Orientation, orthogonal displacement, parallel displacement
+            case "chimera":
+                quotient_node_iterator = itertools.product(
+                    range(2), range(m), range(m)
+                )  # Orientation, orthogonal displacement, parallel displacement
 
-            def _quotient_to_var(nq, k):
-                u, w, z = nq
-                return (w * u + z * (1 - u), w * (1 - u) + z * u, u, k)
+                def _quotient_to_var(nq: tuple, k: int) -> tuple:
+                    u, w, z = nq
+                    return (w * u + z * (1 - u), w * (1 - u) + z * u, u, k)
 
-        else:
-            raise ValueError("Unknown family")
+            case _:
+                raise ValueError("Unknown family")
 
     for nq in quotient_node_iterator:
         # Base proposals preserve (u, w, j, z) and search only over target k-indices:
@@ -575,28 +592,31 @@ def _node_search(
     return embedding
 
 
-def _rail_nodes(m, family):
-    if family == "chimera":
+def _rail_nodes(
+    m: int, family: GraphFamily
+) -> Callable[[int, int, int], Iterator[tuple]]:
+    match family:
+        case "chimera":
 
-        def to_nodes(u, w, k):
-            for z in range(m):
-                yield (w * u + z * (1 - u), w * (1 - u) + z * u, u, k)
-
-    elif family == "zephyr":
-
-        def to_nodes(u, w, k):
-            for j in range(2):
+            def to_nodes(u: int, w: int, k: int) -> Iterator[tuple]:
                 for z in range(m):
-                    yield (u, w, k, j, z)
+                    yield (w * u + z * (1 - u), w * (1 - u) + z * u, u, k)
 
-    elif family == "pegasus":
+        case "zephyr":
 
-        def to_nodes(u, w, k):
-            for z in range(m - 1):
-                yield (u, w // 6, 2 * (w % 6) + k, z)
+            def to_nodes(u: int, w: int, k: int) -> Iterator[tuple]:
+                for j in range(2):
+                    for z in range(m):
+                        yield (u, w, k, j, z)
 
-    else:
-        raise ValueError(f"Unknown rails for {family}")
+        case "pegasus":
+
+            def to_nodes(u: int, w: int, k: int) -> Iterator[tuple]:
+                for z in range(m - 1):
+                    yield (u, w // 6, 2 * (w % 6) + k, z)
+
+        case _:
+            raise ValueError(f"Unknown rails for {family}")
     return to_nodes
 
 
@@ -709,24 +729,25 @@ def _rail_search(
         expand_boundary_search and source.graph["family"] == "zephyr"
     )
     m = source.graph["rows"]
-    if source.graph["family"] == "pegasus":
-        # Only non-trivial case: contraction of odd-couplers.
-        u_index = 0
-        tp = 1
-        t = 2
-        num_orthogonal_displacements = 6 * m
-    elif source.graph["family"] == "zephyr":
-        u_index = 0
-        tp = source.graph["tile"]
-        t = target.graph["tile"]
-        num_orthogonal_displacements = 2 * m + 1
-    elif source.graph["family"] == "chimera":
-        u_index = 2
-        tp = source.graph["tile"]
-        t = target.graph["tile"]
-        num_orthogonal_displacements = m
-    else:
-        raise ValueError("unknown graph family")
+    match source.graph["family"]:
+        case "pegasus":
+            # Only non-trivial case: contraction of odd-couplers.
+            u_index = 0
+            tp = 1
+            t = 2
+            num_orthogonal_displacements = 6 * m
+        case "zephyr":
+            u_index = 0
+            tp = source.graph["tile"]
+            t = target.graph["tile"]
+            num_orthogonal_displacements = 2 * m + 1
+        case "chimera":
+            u_index = 2
+            tp = source.graph["tile"]
+            t = target.graph["tile"]
+            num_orthogonal_displacements = m
+        case _:
+            raise ValueError("unknown graph family")
     rail_nodes = _rail_nodes(m, source.graph["family"])
     uw_iterator = list(itertools.product(range(2), range(num_orthogonal_displacements)))
 
@@ -1121,7 +1142,9 @@ def quotient_search(
     return pruned_embedding, metadata
 
 
-def node_labels_by_orientation(graph, as_str: bool = True):
+def node_labels_by_orientation(
+    graph: nx.Graph, as_str: bool = True
+) -> dict[Hashable, str] | dict[Hashable, int]:
     """Generate node labels from graph orientation classes.
 
     For supported D-Wave graph families, this function labels nodes by their
@@ -1143,23 +1166,26 @@ def node_labels_by_orientation(graph, as_str: bool = True):
         ValueError: If greedy coloring is used and produces
             more than two colors.
     """
-    if graph.graph["family"] in ("pegasus", "zephyr"):
-        col = {n: n[0] for n in graph.nodes()}
-    elif graph.graph["family"] == "chimera":
-        col = {n: n[2] for n in graph.nodes()}
-    else:
-        col = nx.greedy_color(graph)
-        if len(set(col.values())) != 2:
-            raise ValueError(
-                "Orientation labeling requires a bipartite graph, but greedy coloring produced more than 2 colors"
-            )
+    match graph.graph["family"]:
+        case "pegasus" | "zephyr":
+            col = {n: n[0] for n in graph.nodes()}
+        case "chimera":
+            col = {n: n[2] for n in graph.nodes()}
+        case _:
+            col = nx.greedy_color(graph)
+            if len(set(col.values())) != 2:
+                raise ValueError(
+                    "Orientation labeling requires a bipartite graph, but greedy coloring produced more than 2 colors"
+                )
     if as_str:
         return {k: str(v) for k, v in col.items()}
     else:
         return col
 
 
-def node_labels_by_coloring(graph, as_str: bool = True):
+def node_labels_by_coloring(
+    graph: nx.Graph, as_str: bool = True
+) -> dict[Hashable, str] | dict[Hashable, int]:
     """Generate node labels from a family-specific graph coloring.
 
     For supported D-Wave graph families, canonical 2-coloring for Chimera and 4-coloring
@@ -1207,7 +1233,7 @@ def node_labels_by_coloring(graph, as_str: bool = True):
 
 def node_labels_by_quotient(
     graph: nx.Graph, expand_boundary_search: bool = True, as_str: bool = True
-):
+) -> dict[Hashable, str] | dict[Hashable, tuple]:
     """Generate quotient graph labels for nodes based on graph family and structure.
 
     This function assigns quotient labels to nodes. See
@@ -1247,7 +1273,7 @@ def node_labels_by_quotient(
             if expand_boundary_search:
                 m = graph.graph["rows"]
 
-                def wmap(w):
+                def wmap(w: int) -> int:
                     if w == 0:
                         return 1
                     elif w == 2 * m:
@@ -1270,12 +1296,12 @@ def node_labels_by_quotient(
 
 
 def find_labeled_subgraph(
-    source,
-    target,
+    source: nx.Graph,
+    target: nx.Graph,
     labeling_method: Literal["orientation", "quotient", "coloring"] = "orientation",
     node_labels: tuple[dict, dict] | None = None,
     **kwargs,
-):
+) -> dict[Hashable, Hashable]:
     """Find a subgraph of target isomorphic to source that preserves node colors.
 
     This is a helper function that calls :code:``find_subgraph`` with ``node_labels``.
@@ -1314,24 +1340,31 @@ def find_labeled_subgraph(
     """
     if node_labels is None:
         # use provided coloring
-        if labeling_method == "orientation":
-            node_labels = tuple(node_labels_by_orientation(G) for G in (source, target))
-        elif labeling_method == "quotient":
-            if (
-                "family" not in target.graph
-                or target.graph["family"] != source.graph["family"]
-            ):
-                raise ValueError(
-                    "Source and target graph families should match for quotient coloring"
+        match labeling_method:
+            case "orientation":
+                node_labels = tuple(
+                    node_labels_by_orientation(G) for G in (source, target)
                 )
-            if target.graph["family"] not in ("chimera", "pegasus", "zephyr"):
-                raise ValueError(
-                    "Quotient coloring is only implemented for Chimera, Pegasus and Zephyr graph families"
+            case "quotient":
+                if (
+                    "family" not in target.graph
+                    or target.graph["family"] != source.graph["family"]
+                ):
+                    raise ValueError(
+                        "Source and target graph families should match for quotient coloring"
+                    )
+                if target.graph["family"] not in ("chimera", "pegasus", "zephyr"):
+                    raise ValueError(
+                        "Quotient coloring is only implemented for Chimera, Pegasus and Zephyr graph families"
+                    )
+                node_labels = tuple(
+                    node_labels_by_quotient(G) for G in (source, target)
                 )
-            node_labels = tuple(node_labels_by_quotient(G) for G in (source, target))
-        elif labeling_method == "coloring":
-            node_labels = tuple(node_labels_by_coloring(G) for G in (source, target))
-        else:
-            raise ValueError(f"Unknown coloring method {labeling_method}")
+            case "coloring":
+                node_labels = tuple(
+                    node_labels_by_coloring(G) for G in (source, target)
+                )
+            case _:
+                raise ValueError(f"Unknown coloring method {labeling_method}")
 
     return find_subgraph(source, target, node_labels=node_labels, **kwargs)

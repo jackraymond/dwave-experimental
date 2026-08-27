@@ -516,14 +516,14 @@ class TestLabelingSchemeErrors(unittest.TestCase):
         source = zephyr_graph(6, 2, coordinates=True)
         source.graph["labels"] = "custom_scheme"
         target = zephyr_graph(6, 4, coordinates=True)
-        with self.assertRaisesRegex(ValueError, r"unknown labelling scheme"):
+        with self.assertRaisesRegex(ValueError, r"unknown labeling scheme"):
             quotient_search(source, target)
 
     def test_unknown_target_labels_raises_value_error(self):
         source = zephyr_graph(6, 2, coordinates=True)
         target = zephyr_graph(6, 4, coordinates=True)
         target.graph["labels"] = "custom_scheme"
-        with self.assertRaisesRegex(ValueError, r"unknown labelling scheme"):
+        with self.assertRaisesRegex(ValueError, r"unknown labeling scheme"):
             quotient_search(source, target)
 
 
