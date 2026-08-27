@@ -62,7 +62,8 @@ class TestNodeLabelHelpers(unittest.TestCase):
         self.assertTrue(set(labels.values()).issubset({0, 1, 2, 3}))
 
     def test_node_labels_by_coloring_chimera_matches_per_node_two_color(self):
-        # Regression test: coloring must be computed per node, not once for the whole graph.
+        # Regression test: coloring must be computed per node, not once for the
+        # whole graph.
         graph = chimera_graph(2, t=2, coordinates=True)
 
         labels = node_labels_by_coloring(graph, as_str=False)
@@ -70,7 +71,8 @@ class TestNodeLabelHelpers(unittest.TestCase):
         self.assertEqual(set(labels), set(graph.nodes()))
         for node in graph.nodes():
             self.assertEqual(labels[node], chimera_two_color(node))
-        # Sanity check that the coloring is not degenerate (i.e. not all nodes share one color).
+        # Sanity check that the coloring is not degenerate (i.e. not all nodes
+        # share one color).
         self.assertEqual(set(labels.values()), {0, 1})
 
     def test_node_labels_by_coloring_pegasus_matches_per_node_four_color(self):
@@ -101,7 +103,8 @@ class TestNodeLabelHelpers(unittest.TestCase):
         self.assertEqual(set(labels.values()), {"0", "1"})
 
     def test_node_labels_by_coloring_falls_back_to_greedy_color_without_family(self):
-        # A plain graph without D-Wave family metadata should use nx.greedy_color as a fallback.
+        # A plain graph without D-Wave family metadata should use
+        # nx.greedy_color as a fallback.
         graph = nx.cycle_graph(6)
 
         labels = node_labels_by_coloring(graph, as_str=False)

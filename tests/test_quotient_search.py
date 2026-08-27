@@ -36,10 +36,12 @@ from dwave.experimental.embedding_methods.quotient_embedding_search import (
 
 
 # Potential enhancement:
-# It would make sense to simplify this function. The two phase process might better capture practical distributions,
-# but is difficult to understand and adds no value in the context of the tests.
-# It would make sense to add the feature that displacements apply to default rails (or relative to a given
-# embedding), rather than randomly. It would then be possible to guarantee a strict improvement in objectives,
+# It would make sense to simplify this function. The two phase process might
+# better capture practical distributions, but is difficult to understand and
+# adds no value in the context of the tests.
+# It would make sense to add the feature that displacements apply to default
+# rails (or relative to a given embedding), rather than randomly. It would
+# then be possible to guarantee a strict improvement in objectives,
 # strengthening tests.
 def generate_faulty_graph(
     m: int,
@@ -51,20 +53,24 @@ def generate_faulty_graph(
 ) -> nx.Graph:
     """Create a graph with simulated hardware faults.
 
-    Nodes are deleted in two phases: (1) ``round(proportion * uniform_proportion * N)`` nodes are
-    chosen uniformly at random and removed; (2) ``round(proportion * (1 - uniform_proportion) * N)``
-    additional nodes are removed iteratively, one node at a time.
+    Nodes are deleted in two phases: (1) ``round(proportion * uniform_proportion *
+    N)`` nodes are chosen uniformly at random and removed; (2)
+    ``round(proportion * (1 - uniform_proportion) * N)`` additional nodes are
+    removed iteratively, one node at a time.
 
     During phase (2), for each candidate node ``v`` we compute
-    ``r(v) = sum(dist(v, d) for d in D)``, where ``D`` is the current set of deleted nodes and
-    ``dist`` is shortest-path distance in the original (unfaulted) graph. The next deleted node is
-    sampled with probability proportional to ``1 / r(v)``. After each deletion, distances are
-    updated by adding shortest-path contributions from the newly deleted node, so probabilities are
-    re-evaluated at every iteration. This makes nodes near multiple already deleted nodes more
-    likely to fail than nodes near fewer deleted nodes.
+    ``r(v) = sum(dist(v, d) for d in D)``, where ``D`` is the current set of
+    deleted nodes and ``dist`` is shortest-path distance in the original
+    (unfaulted) graph. The next deleted node is sampled with probability
+    proportional to ``1 / r(v)``. After each deletion, distances are updated by
+    adding shortest-path contributions from the newly deleted node, so
+    probabilities are re-evaluated at every iteration. This makes nodes near
+    multiple already deleted nodes more likely to fail than nodes near fewer
+    deleted nodes.
 
-    Nodes that are unreachable from at least one deleted node have zero weight and are not selected.
-    The two phases remove approximately ``proportion`` of all nodes.
+    Nodes that are unreachable from at least one deleted node have zero weight
+    and are not selected. The two phases remove approximately ``proportion`` of
+    all nodes.
 
     Args:
         m: Zephyr row count.
@@ -74,7 +80,8 @@ def generate_faulty_graph(
             uniformly (the complementary fraction is chosen by distance-based
             sampling).
         seed: RNG seed for reproducibility. Defaults to ``None``.
-        family: Graph family. One of ``'chimera'``, ``'pegasus'``, or ``'zephyr'``. Defaults to ``'zephyr'``.
+        family: Graph family. One of ``'chimera'``, ``'pegasus'``, or
+            ``'zephyr'``. Defaults to ``'zephyr'``.
 
     Returns:
         Copy of the full graph with faulty nodes removed.
@@ -277,7 +284,8 @@ class TestMetadataConsistency(unittest.TestCase):
                 )
 
     def test_full_target_gives_full_yield(self):
-        """A perfect target should achieve full yield immediately (starting == final == max)."""
+        """A perfect target should achieve full yield immediately (starting ==
+        final == max)."""
         full_target = zephyr_graph(6, 4, coordinates=True)
         for yt in ("node", "edge"):
             with self.subTest(yield_type=yt):
@@ -308,7 +316,9 @@ class TestGraphInputValidation(unittest.TestCase):
         with self.assertRaisesRegex(
             TypeError, r"source must be a networkx.Graph instance"
         ):
-            greedy_quotient_sublattice_mapping("not_a_graph", self.target)  # type: ignore
+            greedy_quotient_sublattice_mapping(
+                "not_a_graph", self.target  # type: ignore
+            )
         with self.assertRaisesRegex(
             TypeError, r"target must be a networkx.Graph instance"
         ):
@@ -414,7 +424,9 @@ class TestSearchParameterValidation(unittest.TestCase):
     def test_invalid_search_strategy_raises_value_error(self):
         with self.assertRaisesRegex(ValueError, r"search_strategy must be one of"):
             greedy_quotient_sublattice_mapping(
-                self.source, self.target, search_strategy="unknown_strategy"  # type: ignore
+                self.source,
+                self.target,
+                search_strategy="unknown_strategy",  # type: ignore
             )
 
     def test_invalid_yield_type_raises_value_error(self):
@@ -520,7 +532,8 @@ class TestSearchParameterValidation(unittest.TestCase):
 
 
 class TestLabelingSchemeErrors(unittest.TestCase):
-    """Tests for ValueError raised by _ensure_coordinate_source / _ensure_coordinate_target."""
+    """Tests for ValueError raised by _ensure_coordinate_source /
+    _ensure_coordinate_target."""
 
     def test_unknown_source_labels_raises_value_error(self):
         source = zephyr_graph(6, 2, coordinates=True)
@@ -543,7 +556,9 @@ class TestNormalizeCoordinate(unittest.TestCase):
     def test_unknown_graph_family_raises_value_error(self):
         graph = zephyr_graph(3, 2, coordinates=True)
         with self.assertRaisesRegex(ValueError, r"Unknown graph family"):
-            _normalize_coordinate(graph, m=3, t=2, graph_family="unsupported_family")  # type: ignore
+            _normalize_coordinate(
+                graph, m=3, t=2, graph_family="unsupported_family"  # type: ignore
+            )
 
     def test_pegasus_odd_k_singleton_raises_value_error(self):
         """A t=1 Pegasus source graph must only contain even-k (single-rail) nodes."""
@@ -611,7 +626,8 @@ class TestRailHelpersDirect(unittest.TestCase):
 
 
 class TestObjectiveRegressionGuard(unittest.TestCase):
-    """Tests for the ValueError raised when greedy search reduces the objective value."""
+    """Tests for the ValueError raised when greedy search reduces the objective
+    value."""
 
     def test_rail_search_regression_raises_value_error(self):
         source = zephyr_graph(3, 2, coordinates=True)
@@ -622,7 +638,8 @@ class TestObjectiveRegressionGuard(unittest.TestCase):
             node: (node,) for i, node in enumerate(source.nodes()) if i < 20
         }
         with patch(
-            "dwave.experimental.embedding_methods.quotient_embedding_search._rail_search",
+            "dwave.experimental.embedding_methods.quotient_embedding_search."
+            "_rail_search",
             return_value={},
         ):
             with self.assertRaisesRegex(

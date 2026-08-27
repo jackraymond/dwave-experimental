@@ -33,9 +33,9 @@ def node_labels_by_orientation(
     For supported D-Wave graph families, this function labels nodes by their
     physical qubit orientation in processor implementations (vertical or horizontal).
 
-    For non-D-Wave graph families, a greedy coloring is used as a fallback. In that case,
-    the graph must be bipartite so that the resulting coloring has exactly two color classes,
-    which serve as orientation labels.
+    For non-D-Wave graph families, a greedy coloring is used as a fallback. In
+    that case, the graph must be bipartite so that the resulting coloring has
+    exactly two color classes, which serve as orientation labels.
 
     Args:
         graph: Input graph whose nodes will be labeled by orientation.
@@ -58,7 +58,8 @@ def node_labels_by_orientation(
             col = nx.greedy_color(graph)
             if len(set(col.values())) != 2:
                 raise ValueError(
-                    "Orientation labeling requires a bipartite graph, but greedy coloring produced more than 2 colors"
+                    "Orientation labeling requires a bipartite graph, but greedy "
+                    "coloring produced more than 2 colors"
                 )
     if as_str:
         return {k: str(v) for k, v in col.items()}
@@ -82,8 +83,8 @@ def node_labels_by_coloring(
     Args:
         graph: Input graph to color. The family graph metadata is used to select
             a family-specific coloring method where available.
-        as_str: If ``True``, convert color labels to strings before returning. If ``False``,
-            preserve the integer color labels. Defaults to ``True``.
+        as_str: If ``True``, convert color labels to strings before returning. If
+            ``False``, preserve the integer color labels. Defaults to ``True``.
 
     Returns:
         A dictionary mapping graph nodes to color labels.
@@ -127,18 +128,18 @@ def node_labels_by_quotient(
 
     Args:
         graph: A Chimera, Pegasus or Zephyr NetworkX graph.
-        expand_boundary_search: If ``True`` and the graph family is ``"zephyr"``, boundary
-            quotient nodes are remapped to adjacent (interior perpendicular block
-            offset) nodes. Defaults to ``True``.
-        as_str: If ``True``, labels are converted to strings. If ``False``, labels remain
-            as tuples. Defaults to ``True``.
+        expand_boundary_search: If ``True`` and the graph family is ``"zephyr"``,
+            boundary quotient nodes are remapped to adjacent (interior perpendicular
+            block offset) nodes. Defaults to ``True``.
+        as_str: If ``True``, labels are converted to strings. If ``False``, labels
+            remain as tuples. Defaults to ``True``.
 
     Returns:
         A dictionary mapping node coordinates to quotient labels.
 
     Raises:
-        ValueError: If graph family is not found in metadata or is not 'zephyr', 'pegasus',
-            or 'chimera'.
+        ValueError: If graph family is not found in metadata or is not 'zephyr',
+            'pegasus', or 'chimera'.
     """
     if "family" in graph.graph and graph.graph["family"] in (
         "chimera",
@@ -184,9 +185,9 @@ def find_labeled_subgraph(
     """Find a subgraph of target isomorphic to source that preserves node colors.
 
     This is a helper function that calls :code:``find_subgraph`` with ``node_labels``.
-    Node labeling can significantly accelerate the search when well chosen. The supported
-    labeling methods are intended for bipartite graphs and D-Wave source graphs (Zephyr,
-    Pegasus, and Chimera) embedded onto D-Wave target graphs. However,
+    Node labeling can significantly accelerate the search when well chosen. The
+    supported labeling methods are intended for bipartite graphs and D-Wave source
+    graphs (Zephyr, Pegasus, and Chimera) embedded onto D-Wave target graphs. However,
     in general it may be necessary to consider uncolored search or several
     application-specific node labelings to find embeddings.
 
@@ -230,11 +231,13 @@ def find_labeled_subgraph(
                     or target.graph["family"] != source.graph["family"]
                 ):
                     raise ValueError(
-                        "Source and target graph families should match for quotient coloring"
+                        "Source and target graph families should match for quotient "
+                        "coloring"
                     )
                 if target.graph["family"] not in ("chimera", "pegasus", "zephyr"):
                     raise ValueError(
-                        "Quotient coloring is only implemented for Chimera, Pegasus and Zephyr graph families"
+                        "Quotient coloring is only implemented for Chimera, Pegasus "
+                        "and Zephyr graph families"
                     )
                 node_labels = tuple(
                     node_labels_by_quotient(G) for G in (source, target)
