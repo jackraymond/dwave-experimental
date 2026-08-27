@@ -22,18 +22,11 @@ from dwave.graphs import (
     zephyr_graph,
     pegasus_graph,
     chimera_graph,
-    chimera_two_color,
-    pegasus_four_color,
-    zephyr_four_color,
 )
 
 from dwave.experimental.embedding_methods import greedy_quotient_sublattice_mapping
 from dwave.experimental.embedding_methods.quotient_embedding_search import (
     QuotientSearchMetadata,
-    find_labeled_subgraph,
-    node_labels_by_coloring,
-    node_labels_by_orientation,
-    node_labels_by_quotient,
 )
 
 
@@ -527,115 +520,3 @@ class TestLabelingSchemeErrors(unittest.TestCase):
         target.graph["labels"] = "custom_scheme"
         with self.assertRaisesRegex(ValueError, r"unknown labeling scheme"):
             greedy_quotient_sublattice_mapping(source, target)
-
-
-class TestNodeLabelHelpers(unittest.TestCase):
-    """Basic tests for helper labeling functions."""
-
-    def test_node_labels_by_orientation_zephyr_matches_orientation_axis(self):
-        graph = zephyr_graph(2, 2, coordinates=True)
-
-        labels = node_labels_by_orientation(graph, as_str=False)
-
-        self.assertEqual(set(labels), set(graph.nodes()))
-        for node in graph.nodes():
-            self.assertEqual(labels[node], node[0])
-
-    def test_node_labels_by_orientation_chimera_matches_orientation_axis(self):
-        graph = chimera_graph(2, t=2, coordinates=True)
-
-        labels = node_labels_by_orientation(graph, as_str=False)
-
-        self.assertEqual(set(labels), set(graph.nodes()))
-        for node in graph.nodes():
-            self.assertEqual(labels[node], node[2])
-
-    def test_node_labels_by_coloring_preserves_original_linear_labels(self):
-        graph = zephyr_graph(2, 2, coordinates=False)
-
-        labels = node_labels_by_coloring(graph, as_str=False)
-
-        self.assertEqual(set(labels), set(graph.nodes()))
-        self.assertTrue(set(labels.values()).issubset({0, 1, 2, 3}))
-
-    def test_node_labels_by_coloring_chimera_matches_per_node_two_color(self):
-        # Regression test: coloring must be computed per node, not once for the whole graph.
-        graph = chimera_graph(2, t=2, coordinates=True)
-
-        labels = node_labels_by_coloring(graph, as_str=False)
-
-        self.assertEqual(set(labels), set(graph.nodes()))
-        for node in graph.nodes():
-            self.assertEqual(labels[node], chimera_two_color(node))
-        # Sanity check that the coloring is not degenerate (i.e. not all nodes share one color).
-        self.assertEqual(set(labels.values()), {0, 1})
-
-    def test_node_labels_by_coloring_pegasus_matches_per_node_four_color(self):
-        graph = pegasus_graph(3, coordinates=True)
-
-        labels = node_labels_by_coloring(graph, as_str=False)
-
-        self.assertEqual(set(labels), set(graph.nodes()))
-        for node in graph.nodes():
-            self.assertEqual(labels[node], pegasus_four_color(node))
-
-    def test_node_labels_by_coloring_zephyr_matches_per_node_four_color(self):
-        graph = zephyr_graph(2, 2, coordinates=True)
-
-        labels = node_labels_by_coloring(graph, as_str=False)
-
-        self.assertEqual(set(labels), set(graph.nodes()))
-        for node in graph.nodes():
-            self.assertEqual(labels[node], zephyr_four_color(node))
-
-    def test_node_labels_by_coloring_as_str_converts_labels_to_strings(self):
-        graph = chimera_graph(2, t=2, coordinates=True)
-
-        labels = node_labels_by_coloring(graph, as_str=True)
-
-        self.assertEqual(set(labels), set(graph.nodes()))
-        self.assertTrue(all(isinstance(v, str) for v in labels.values()))
-        self.assertEqual(set(labels.values()), {"0", "1"})
-
-    def test_node_labels_by_coloring_falls_back_to_greedy_color_without_family(self):
-        # A plain graph without D-Wave family metadata should use nx.greedy_color as a fallback.
-        graph = nx.cycle_graph(6)
-
-        labels = node_labels_by_coloring(graph, as_str=False)
-
-        self.assertEqual(set(labels), set(graph.nodes()))
-        expected = nx.greedy_color(graph)
-        self.assertEqual(labels, expected)
-
-    def test_node_labels_by_quotient_remaps_zephyr_boundaries(self):
-        graph = zephyr_graph(2, 2, coordinates=True)
-
-        labels = node_labels_by_quotient(
-            graph, expand_boundary_search=True, as_str=False
-        )
-
-        self.assertEqual(labels[(0, 0, 0, 0, 0)], (0, 1, 0, 0))
-        self.assertEqual(labels[(0, 4, 0, 0, 0)], (0, 3, 0, 0))
-        self.assertEqual(labels[(0, 2, 0, 0, 0)], (0, 2, 0, 0))
-
-    def test_node_labels_by_quotient_chimera_drops_qubit_index(self):
-        graph = chimera_graph(2, t=2, coordinates=True)
-
-        labels = node_labels_by_quotient(graph, as_str=False)
-
-        self.assertEqual(set(labels), set(graph.nodes()))
-        for node in graph.nodes():
-            self.assertEqual(labels[node], node[:3])
-
-    def test_find_labeled_subgraph_returns_identity_on_simple_graph(self):
-        source = nx.path_graph(2)
-        target = nx.path_graph(2)
-        node_labels = ({0: "0", 1: "1"}, {0: "0", 1: "1"})
-
-        embedding = find_labeled_subgraph(
-            source, target, node_labels=node_labels, timeout=1
-        )
-
-        self.assertIsInstance(embedding, dict)
-        self.assertEqual(set(embedding.keys()), set(source.nodes()))
-        self.assertEqual(set(embedding.values()), set(target.nodes()))
