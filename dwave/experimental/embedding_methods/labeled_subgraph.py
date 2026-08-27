@@ -49,7 +49,7 @@ def node_labels_by_orientation(
         ValueError: If greedy coloring is used and produces
             more than two colors.
     """
-    match graph.graph["family"]:
+    match graph.graph.get("family", None):
         case "pegasus" | "zephyr":
             col = {n: n[0] for n in graph.nodes()}
         case "chimera":
@@ -102,8 +102,6 @@ def node_labels_by_coloring(
             col = {n: pegasus_four_color(n) for n in graph.nodes()}
         elif graph.graph["family"] == "zephyr":
             col = {n: zephyr_four_color(n) for n in graph.nodes()}
-        else:
-            col = nx.greedy_color(graph)
         col = {to_source(n): color for n, color in col.items()}
     else:
         col = nx.greedy_color(graph)
@@ -169,7 +167,9 @@ def node_labels_by_quotient(
         raise ValueError("Unrecognized graph family")
 
     if as_str:
-        return {k: str(v) for k, v in col.items()}
+        # Whitespace-free: find_subgraph's underlying vertex-label parser rejects labels
+        # containing spaces, which the default tuple repr would otherwise include.
+        return {k: str(v).replace(" ", "") for k, v in col.items()}
     else:
         return col
 
