@@ -195,7 +195,7 @@ cython_debug/
 .pypirc
 
 # Generated figures
-*.png
+examples/figures/*.png
 
 # Cursor
 #  Cursor is an AI-powered code editor. `.cursorignore` specifies files/directories to

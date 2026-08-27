@@ -13,6 +13,7 @@
 #    limitations under the License.
 
 import argparse
+import os
 
 import matplotlib.pyplot as plt
 
@@ -358,7 +359,8 @@ def main(
         fig = plt.figure(i)
         print(f"Figure {i} label: {fig.get_label()}")
         if save_figs:
-            fig.savefig(f"{family}_{seed}_{i}.png")
+            os.makedirs("figures", exist_ok=True)
+            fig.savefig(f"figures/{family}_seed{seed}_plot{i}.png")
 
     plt.show()
 
