@@ -595,6 +595,7 @@ def _node_search(
 def _rail_nodes(
     m: int, family: GraphFamily
 ) -> Callable[[int, int, int], Iterator[tuple]]:
+    """Generate the nodes in a rail by family and rail index."""
     match family:
         case "chimera":
 
@@ -1273,16 +1274,9 @@ def node_labels_by_quotient(
             if expand_boundary_search:
                 m = graph.graph["rows"]
 
-                def wmap(w: int) -> int:
-                    if w == 0:
-                        return 1
-                    elif w == 2 * m:
-                        return 2 * m - 1
-                    else:
-                        return w
-
+                wmap = {0: 1, 2 * m: 2 * m - 1}
                 col = {
-                    to_source(n): n[:1] + (wmap(n[1]),) + n[3:] for n in graph.nodes()
+                    to_source(n): n[:1] + (wmap.get(n[1], n[1]),) + n[3:] for n in graph.nodes()
                 }
             else:
                 col = {to_source(n): n[:2] + n[3:] for n in graph.nodes()}
