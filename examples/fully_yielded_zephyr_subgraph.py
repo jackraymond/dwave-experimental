@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-import dwave_networkx as dnx
+from dwave.graphs import zephyr_graph
 import networkx as nx
 import numpy as np
 from minorminer import find_embedding
@@ -32,8 +32,8 @@ print(
     "zephyr_quotient_search on that sublattice. "
 )
 
-tile = dnx.zephyr_graph(6, 4, coordinates=True)
-target = dnx.zephyr_graph(12, 4, coordinates=True)
+tile = zephyr_graph(6, 4, coordinates=True)
+target = zephyr_graph(12, 4, coordinates=True)
 print(
     "Step 1: Build two Zephyr graphs.\nThe smaller graph is the m=6, t=4 tile we want to recover "
     f"({tile.number_of_nodes()} nodes, {tile.number_of_edges()} edges), and the larger graph is the"
@@ -107,7 +107,7 @@ print(
 )
 
 # embed source zephyr(mp=6, tp=2) into the found complete m=6, t=4 sublattice.
-source = dnx.zephyr_graph(6, 2, coordinates=True)
+source = zephyr_graph(6, 2, coordinates=True)
 print(
     "Step 6: Build the source graph we actually want to place into that recovered sublattice. "
     f"Here the source is a Zephyr m=6, t=2 graph with {source.number_of_nodes()} nodes and "

@@ -1,0 +1,5 @@
+---
+upgrade:
+  - |
+    Replace dwave_networkx dependency and imports with dwave-graphs.
+
