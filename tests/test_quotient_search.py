@@ -15,6 +15,7 @@
 import itertools
 import unittest
 from typing import Literal
+from unittest.mock import patch
 
 import networkx as nx
 import numpy as np
@@ -27,6 +28,10 @@ from dwave.graphs import (
 from dwave.experimental.embedding_methods import greedy_quotient_sublattice_mapping
 from dwave.experimental.embedding_methods.quotient_embedding_search import (
     QuotientSearchMetadata,
+    _node_search,
+    _normalize_coordinate,
+    _rail_nodes,
+    _rail_search,
 )
 
 
@@ -388,6 +393,16 @@ class TestGraphInputValidation(unittest.TestCase):
         ):
             greedy_quotient_sublattice_mapping(bad_source, self.target)
 
+    def test_unsupported_source_family_raises_value_error(self):
+        bad_source = self.source.copy()
+        bad_source.graph["family"] = "unsupported_family"
+        bad_target = self.target.copy()
+        bad_target.graph["family"] = "unsupported_family"
+        with self.assertRaisesRegex(
+            ValueError, r"source graph should be a supported family graph"
+        ):
+            greedy_quotient_sublattice_mapping(bad_source, bad_target)
+
 
 class TestSearchParameterValidation(unittest.TestCase):
     """Tests for TypeError / ValueError raised by _validate_search_parameters."""
@@ -520,3 +535,99 @@ class TestLabelingSchemeErrors(unittest.TestCase):
         target.graph["labels"] = "custom_scheme"
         with self.assertRaisesRegex(ValueError, r"unknown labeling scheme"):
             greedy_quotient_sublattice_mapping(source, target)
+
+
+class TestNormalizeCoordinate(unittest.TestCase):
+    """Tests for ValueError raised directly by _normalize_coordinate."""
+
+    def test_unknown_graph_family_raises_value_error(self):
+        graph = zephyr_graph(3, 2, coordinates=True)
+        with self.assertRaisesRegex(ValueError, r"Unknown graph family"):
+            _normalize_coordinate(graph, m=3, t=2, graph_family="unsupported_family")  # type: ignore
+
+    def test_pegasus_odd_k_singleton_raises_value_error(self):
+        """A t=1 Pegasus source graph must only contain even-k (single-rail) nodes."""
+        odd_k_only = nx.Graph()
+        odd_k_only.add_node((0, 0, 1, 0))  # odd k index
+        odd_k_only.graph.update(family="pegasus", rows=3, tile=1, labels="coordinate")
+        with self.assertRaisesRegex(
+            ValueError, r"only contains nodes with even k indices"
+        ):
+            _normalize_coordinate(odd_k_only, m=3, t=1)
+
+
+class TestNodeSearchDirect(unittest.TestCase):
+    """Tests for ValueError raised directly by _node_search."""
+
+    def test_mismatched_family_raises_value_error(self):
+        source = zephyr_graph(3, 2, coordinates=True)
+        target = chimera_graph(3, t=4, coordinates=True)
+        with self.assertRaisesRegex(
+            ValueError, r"source and target families should be matched"
+        ):
+            _node_search(source, target, embedding={})
+
+    def test_mismatched_grid_parameters_raises_value_error(self):
+        source = zephyr_graph(3, 2, coordinates=True)
+        target = zephyr_graph(4, 2, coordinates=True)
+        with self.assertRaisesRegex(
+            ValueError, r"source and target must have matched square grid parameters"
+        ):
+            _node_search(source, target, embedding={})
+
+    def test_unknown_family_without_boundary_expansion_raises_value_error(self):
+        source = chimera_graph(3, t=2, coordinates=True)
+        target = chimera_graph(3, t=4, coordinates=True)
+        source.graph["family"] = target.graph["family"] = "unsupported_family"
+        with self.assertRaisesRegex(ValueError, r"Unknown family"):
+            _node_search(source, target, embedding={}, expand_boundary_search=False)
+
+
+class TestRailHelpersDirect(unittest.TestCase):
+    """Tests for ValueError raised directly by _rail_nodes and _rail_search."""
+
+    def test_rail_nodes_unknown_family_raises_value_error(self):
+        with self.assertRaisesRegex(ValueError, r"Unknown rails for"):
+            _rail_nodes(3, "unsupported_family")  # type: ignore
+
+    def test_rail_search_unknown_family_raises_value_error(self):
+        source = chimera_graph(3, t=2, coordinates=True)
+        target = chimera_graph(3, t=4, coordinates=True)
+        source.graph["family"] = target.graph["family"] = "unsupported_family"
+        with self.assertRaisesRegex(ValueError, r"unknown graph family"):
+            _rail_search(source, target, embedding={})
+
+    def test_rail_search_duplicate_target_raises_value_error(self):
+        source = zephyr_graph(2, 2, coordinates=True)
+        target = zephyr_graph(2, 4, coordinates=True)
+        nodes = list(source.nodes())
+        # Seed the embedding with a pre-existing duplicate target assignment.
+        embedding = {n: n for n in nodes}
+        embedding[nodes[0]] = embedding[nodes[1]]
+        with self.assertRaisesRegex(
+            ValueError, r"Duplicate target coordinates detected in embedding"
+        ):
+            _rail_search(source, target, embedding)
+
+
+class TestObjectiveRegressionGuard(unittest.TestCase):
+    """Tests for the ValueError raised when greedy search reduces the objective value."""
+
+    def test_rail_search_regression_raises_value_error(self):
+        source = zephyr_graph(3, 2, coordinates=True)
+        target = zephyr_graph(3, 4, coordinates=True)
+        # Provide a starting embedding with nonzero yield, then force the greedy
+        # rail search to discard it entirely so the objective value drops.
+        starting_embedding = {
+            node: (node,) for i, node in enumerate(source.nodes()) if i < 20
+        }
+        with patch(
+            "dwave.experimental.embedding_methods.quotient_embedding_search._rail_search",
+            return_value={},
+        ):
+            with self.assertRaisesRegex(
+                ValueError, r"Greedy quotient search reduced the objective value"
+            ):
+                greedy_quotient_sublattice_mapping(
+                    source, target, embedding=starting_embedding
+                )

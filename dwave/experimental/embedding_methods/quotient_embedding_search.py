@@ -221,12 +221,6 @@ def _validate_search_parameters(
                         f"family '{target_family}'. Got target node {target_node} for "
                         f"source key {key}"
                     )
-            if source_labels == "coordinate":
-                if not isinstance(key, tuple) or len(key) != source_coord_len:
-                    raise ValueError(
-                        f"source coordinate keys must be {source_coord_len}-tuples for "
-                        f"family '{source_family}'. Got key {key}"
-                    )
         # Check one-to-one constraint: flatten all chains and ensure no duplicates
         all_target_nodes = []
         for chain in embedding.values():
@@ -295,11 +289,6 @@ def _normalize_coordinate(
     # As necessary convert edge_list to coordinates and define inversion
     match graph_labels:
         case "int":
-            if not to_tuple:
-                raise ValueError(
-                    "source graph has unknown labeling scheme for family "
-                    f"{graph.graph['family']}"
-                )
             edge_list = [(to_tuple(n1), to_tuple(n2)) for n1, n2 in graph.edges()]
             node_list = [to_tuple(n) for n in graph.nodes()]
             to_linear = coord_to_linear
@@ -835,8 +824,6 @@ def _rail_search(
         else:
             # this path is activated when ksymmetric is False and yield_type is either "edge" or
             # "rail-edge".
-            if source_external_edges is None:
-                raise ValueError("internal error: missing external edge subgraph")
 
             permutation_scores = {
                 proposal_perm: sum(
