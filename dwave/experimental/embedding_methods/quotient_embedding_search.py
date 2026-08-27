@@ -49,9 +49,10 @@ def _expected_coordinate_tuple_len(family: GraphFamily) -> int:
 def _validate_graph_inputs(source: nx.Graph, target: nx.Graph) -> None:
     """Validate that source and target are supported NetworkX graphs.
 
-    Both source and target graphs must be networkx graph instances with a ``'family'`` metadata
-    key set to one of ``'zephyr'``, ``'pegasus'``, or ``'chimera'``. Each graph must also contain
-    ``'rows'``, ``'tile'`` and ``'labels'`` metadata keys.
+    Both source and target graphs must be networkx graph instances with a
+    ``'family'`` metadata key set to one of ``'zephyr'``, ``'pegasus'``, or
+    ``'chimera'``. Each graph must also contain ``'rows'``, ``'tile'`` and
+    ``'labels'`` metadata keys.
 
     Args:
         source: Source graph.
@@ -59,8 +60,9 @@ def _validate_graph_inputs(source: nx.Graph, target: nx.Graph) -> None:
 
     Raises:
         TypeError: If inputs are not NetworkX graphs.
-        ValueError: If either graph is not a supported family graph or is missing 'rows'/'tile'
-            metadata, or if the source and target graphs are not of the same family.
+        ValueError: If either graph is not a supported family graph or is missing
+            'rows'/'tile' metadata, or if the source and target graphs are not of
+            the same family.
     """
     if not isinstance(source, nx.Graph):
         raise TypeError("source must be a networkx.Graph instance")
@@ -97,10 +99,10 @@ def _extract_graph_properties(
     """Extract and validate graph properties, returning ``(rows, tile count, and target
     tile count)``.
 
-    Each graph must contain required metadata fields: 'rows' (number of rows) and 'tile'
-    (tile count). All metadata values must be positive integers. The source and target graphs must
-    have matching row counts. The target tile count must be greater than or equal to the source tile
-    count to accommodate the embedding.
+    Each graph must contain required metadata fields: 'rows' (number of rows) and
+    'tile' (tile count). All metadata values must be positive integers. The source
+    and target graphs must have matching row counts. The target tile count must be
+    greater than or equal to the source tile count to accommodate the embedding.
 
     Args:
         source: Source graph.
@@ -129,7 +131,10 @@ def _extract_graph_properties(
         if v <= 0:
             raise ValueError(f"graph '{name}' metadata must be positive")
     if not (
-        m == target.graph["rows"] == target.graph["columns"] == source.graph["columns"]
+        m
+        == target.graph["rows"]
+        == target.graph["columns"]
+        == source.graph["columns"]
     ):
         raise ValueError("source and target must have matched square grid parameters")
     if t < tp:
@@ -150,28 +155,28 @@ def _validate_search_parameters(
 ) -> None:
     """Validate high-level search parameters.
 
-    ``search_strategy`` must be one of ``'by_quotient_rail'``, ``'by_quotient_node'``, or
-    ``'by_rail_then_node'``; ``yield_type`` must be one of ``'node'``, ``'edge'``, or
-    ``'rail-edge'``; and ``embedding`` must be ``None`` or a ``dict`` representing a
-    one-to-one chain mapping where each source key is a coordinate tuple and each value is a
-    singleton target-node chain.
+    ``search_strategy`` must be one of ``'by_quotient_rail'``, ``'by_quotient_node'``,
+    or ``'by_rail_then_node'``; ``yield_type`` must be one of ``'node'``, ``'edge'``,
+    or ``'rail-edge'``; and ``embedding`` must be ``None`` or a ``dict`` representing
+    a one-to-one chain mapping where each source key is a coordinate tuple and each
+    value is a singleton target-node chain.
 
     Args:
         search_strategy: Search mode.
         yield_type: Optimization objective.
-        embedding: Optional initial one-to-one chain mapping in the input graph node label format.
-            If None, no validation of the embedding is performed.
+        embedding: Optional initial one-to-one chain mapping in the input graph node
+            label format. If None, no validation of the embedding is performed.
         source_family: Source graph family metadata value.
         target_family: Target graph family metadata value.
         source_labels: Source graph labels metadata value.
         target_labels: Target graph labels metadata value.
 
     Raises:
-        ValueError: If ``search_strategy`` or ``yield_type`` is invalid, if ``embedding``
-            contains duplicate target nodes (i.e. is not one-to-one), if embedding chains are not
-            singleton tuples, if source keys are not coordinate tuples of the expected family
-            length, or if coordinate-valued target nodes do not match family conventions
-            (Zephyr=5, Pegasus/Chimera=4).
+        ValueError: If ``search_strategy`` or ``yield_type`` is invalid, if
+            ``embedding`` contains duplicate target nodes (i.e. is not one-to-one),
+            if embedding chains are not singleton tuples, if source keys are not
+            coordinate tuples of the expected family length, or if coordinate-valued
+            target nodes do not match family conventions (Zephyr=5, Pegasus/Chimera=4).
         TypeError: If ``embedding`` is provided but is not a dictionary.
     """
     valid_ksearch = get_args(SearchStrategy)
@@ -198,9 +203,13 @@ def _validate_search_parameters(
         for key, value in embedding.items():
             if not isinstance(value, tuple) or len(value) != 1:
                 raise ValueError(
-                    f"embedding values must be singleton tuples representing node chains. "
-                    f"Got value {value} of type {type(value)}"
-                    + (f" with length {len(value)}" if isinstance(value, tuple) else "")
+                    "embedding values must be singleton tuples representing node "
+                    f"chains. Got value {value} of type {type(value)}"
+                    + (
+                        f" with length {len(value)}"
+                        if isinstance(value, tuple)
+                        else ""
+                    )
                     + f" for key {key}"
                 )
 
@@ -217,9 +226,9 @@ def _validate_search_parameters(
                     or len(target_node) != target_coord_len
                 ):
                     raise ValueError(
-                        f"target coordinate nodes must be {target_coord_len}-tuples for "
-                        f"family '{target_family}'. Got target node {target_node} for "
-                        f"source key {key}"
+                        f"target coordinate nodes must be {target_coord_len}-tuples "
+                        f"for family '{target_family}'. Got target node "
+                        f"{target_node} for source key {key}"
                     )
         # Check one-to-one constraint: flatten all chains and ensure no duplicates
         all_target_nodes = []
@@ -227,8 +236,8 @@ def _validate_search_parameters(
             all_target_nodes.extend(chain)
         if len(all_target_nodes) != len(set(all_target_nodes)):
             raise ValueError(
-                "embedding must be a one-to-one mapping: duplicate target nodes detected across "
-                "chains. "
+                "embedding must be a one-to-one mapping: duplicate target nodes "
+                "detected across chains. "
             )
 
 
@@ -240,7 +249,8 @@ def _normalize_coordinate(
     graph_family: GraphFamily | None = None,
     graph_labels: Literal["coordinate", "int"] | None = None,
 ) -> tuple[nx.Graph, Callable[[tuple], Hashable]]:
-    """Normalize the source graph to a dwave.graph compatible family with canonical coordinates.
+    """Normalize the source graph to a dwave.graph compatible family with canonical
+    coordinates.
 
     This function maps graphs to the family-appropriate coordinate system.
 
@@ -248,14 +258,15 @@ def _normalize_coordinate(
         graph: NetworkX graph, either linear or coordinate labelled.
         m: Number of rows (must be consistent with ``graph``).
         t: Source tile count (must be consistent with ``graph``).
-        add_singleton_nodes: If ``True``, add any missing nodes in the coordinate-labelled
-            source graph as singleton nodes.
-        graph_family: Optional graph family. If not provided, it is inferred from the graph metadata.
+        add_singleton_nodes: If ``True``, add any missing nodes in the
+            coordinate-labelled source graph as singleton nodes.
+        graph_family: Optional graph family. If not provided, it is inferred from
+            the graph metadata.
         graph_labels: Final graph label preference (int or coordinate).
             If not provided, it is inferred from the graph metadata.
     Returns:
-        coordinate-labelled (tuple) source graph and a callable that maps coordinate nodes
-        back to the original source labelling space
+        coordinate-labelled (tuple) source graph and a callable that maps
+        coordinate nodes back to the original source labelling space
 
     Raises:
         ValueError: If source labels are unsupported.
@@ -302,7 +313,8 @@ def _normalize_coordinate(
     generator_args = dict(coordinates=True, node_list=node_list, edge_list=edge_list)
     if add_singleton_nodes:
         if graph.graph["family"] == "pegasus":
-            # For Pegasus, we need to add singleton nodes with odd k indices to get the full single-rail graph
+            # For Pegasus, we need to add singleton nodes with odd k indices to
+            # get the full single-rail graph
             generator_args["node_list"] = [
                 (u, w // 6, (2 * w) % 12 + k, z)
                 for u in range(2)
@@ -317,12 +329,14 @@ def _normalize_coordinate(
 
     _source = graph_generator(*shape, **generator_args)
     if graph.graph["family"] == "pegasus" and t == 1:
-        # Pegasus quotient search only works for single-rail source graphs, which are defined by having only even k indices.
+        # Pegasus quotient search only works for single-rail source graphs, which are
+        # defined by having only even k indices.
         # If any odd k nodes are present, raise an error.
         if any(n[2] % 2 != 0 for n in _source.nodes()):
             raise ValueError(
-                "Pegasus quotient search requires that the source graph only contains nodes with even k indices, "
-                "which defines a pegasus subgraph with single rails as opposed to pairs of rails."
+                "Pegasus quotient search requires that the source graph only "
+                "contains nodes with even k indices, which defines a pegasus "
+                "subgraph with single rails as opposed to pairs of rails."
             )
     return _source, to_linear
 
@@ -340,9 +354,9 @@ def _boundary_proposals(
 
     This routine applies only to Zephyr quotient search.
 
-    For a fixed quotient index ``(u, w, j, z)``, this function proposes all target ``k`` locations
-    in that rail, then removes the entries already occupied by the currently mapped source
-    :math:`k \in \{0, \dots, tp-1\}`.
+    For a fixed quotient index ``(u, w, j, z)``, this function proposes all target
+    ``k`` locations in that rail, then removes the entries already occupied by the
+    currently mapped source :math:`k \in \{0, \dots, tp-1\}`.
 
     Args:
         u: Zephyr orientation.
@@ -467,7 +481,10 @@ def _node_search(
             "source and target families should be matched for implemented searches"
         )
     if not (
-        m == target.graph["rows"] == target.graph["columns"] == source.graph["columns"]
+        m
+        == target.graph["rows"]
+        == target.graph["columns"]
+        == source.graph["columns"]
     ):
         raise ValueError("source and target must have matched square grid parameters")
 
@@ -538,22 +555,26 @@ def _node_search(
             if yield_type == "node":
                 # symmetry doesn't matter: just count how many proposed nodes are present in the
                 # target:
-                counts = [int(target.has_node(n_t)) for n_t in proposals]
+                def _score(n_t):
+                    return int(target.has_node(n_t))
             else:
                 # Count preserved edges from already-mapped neighboring source nodes into each
                 # proposed target node.
                 source_neighbours = list(source.neighbors(_quotient_to_var(nq, 0)))
-                counts = [
-                    sum(
+                def _score(n_t):
+                    return sum(
                         int(target.has_edge(embedding[n_s], n_t))
                         for n_s in source_neighbours
                         if n_s in embedding
                     )
-                    for n_t in proposals
-                ]
+
+            counts = [_score(n_t) for n_t in proposals]
             # performance: this is faster than selected = proposals[np.argsort()]...
             top_indices = np.argpartition(np.asarray(counts), -tp)[-tp:]
             selected = [proposals[idx] for idx in top_indices]
+            new_score = sum(counts[idx] for idx in top_indices)
+            existing = [embedding.get(_quotient_to_var(nq, k)) for k in range(tp)]
+            existing_score = sum(_score(v) for v in existing if v is not None)
         else:
             # Nodes with different k indices in the source block are not interchangeable, so we
             # evaluate all permutations of the proposals:
@@ -568,13 +589,26 @@ def _node_search(
             }
             selected_key = max(permutation_scores, key=lambda k: permutation_scores[k])
             selected = list(selected_key)
+            new_score = permutation_scores[selected_key]
+            existing = [embedding.get(_quotient_to_var(nq, k)) for k in range(tp)]
+            if any(v is None for v in existing):
+                # block not fully assigned yet: nothing to compare against, so accept
+                existing_score = new_score - 1
+            else:
+                existing_score = sum(
+                    int(target.has_edge(embedding[n], existing[k]))
+                    for k in range(tp)
+                    for n in source.neighbors(_quotient_to_var(nq, k))
+                    if n in embedding
+                )
 
-        embedding.update(
-            {
-                _quotient_to_var(nq, k): proposal
-                for k, proposal in zip(range(tp), selected)
-            }
-        )
+        if new_score > existing_score:
+            embedding.update(
+                {
+                    _quotient_to_var(nq, k): proposal
+                    for k, proposal in zip(range(tp), selected)
+                }
+            )
 
     return embedding
 
