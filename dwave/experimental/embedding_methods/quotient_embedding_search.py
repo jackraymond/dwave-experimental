@@ -131,10 +131,7 @@ def _extract_graph_properties(
         if v <= 0:
             raise ValueError(f"graph '{name}' metadata must be positive")
     if not (
-        m
-        == target.graph["rows"]
-        == target.graph["columns"]
-        == source.graph["columns"]
+        m == target.graph["rows"] == target.graph["columns"] == source.graph["columns"]
     ):
         raise ValueError("source and target must have matched square grid parameters")
     if t < tp:
@@ -205,11 +202,7 @@ def _validate_search_parameters(
                 raise ValueError(
                     "embedding values must be singleton tuples representing node "
                     f"chains. Got value {value} of type {type(value)}"
-                    + (
-                        f" with length {len(value)}"
-                        if isinstance(value, tuple)
-                        else ""
-                    )
+                    + (f" with length {len(value)}" if isinstance(value, tuple) else "")
                     + f" for key {key}"
                 )
 
@@ -249,10 +242,10 @@ def _normalize_coordinate(
     graph_family: GraphFamily | None = None,
     graph_labels: Literal["coordinate", "int"] | None = None,
 ) -> tuple[nx.Graph, Callable[[tuple], Hashable]]:
-    """Normalize the source graph to a dwave.graph compatible family with canonical
-    coordinates.
+    """Transform to a coordinated dwave.graph compatible family for processing.
 
-    This function maps graphs to the family-appropriate coordinate system.
+    This function maps graphs to the family-appropriate coordinate-labeled class
+    without node vacancies, required by some mehods.
 
     Args:
         graph: NetworkX graph, either linear or coordinate labelled.
@@ -481,10 +474,7 @@ def _node_search(
             "source and target families should be matched for implemented searches"
         )
     if not (
-        m
-        == target.graph["rows"]
-        == target.graph["columns"]
-        == source.graph["columns"]
+        m == target.graph["rows"] == target.graph["columns"] == source.graph["columns"]
     ):
         raise ValueError("source and target must have matched square grid parameters")
 
@@ -557,10 +547,12 @@ def _node_search(
                 # target:
                 def _score(n_t):
                     return int(target.has_node(n_t))
+
             else:
                 # Count preserved edges from already-mapped neighboring source nodes into each
                 # proposed target node.
                 source_neighbours = list(source.neighbors(_quotient_to_var(nq, 0)))
+
                 def _score(n_t):
                     return sum(
                         int(target.has_edge(embedding[n_s], n_t))

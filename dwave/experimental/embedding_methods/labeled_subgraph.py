@@ -12,21 +12,22 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-from typing import Hashable, Literal
+from typing import Callable, Hashable, Literal
 
 from minorminer.subgraph import find_subgraph
 import networkx as nx
-from dwave.graphs import chimera_two_color, pegasus_four_color, zephyr_four_color
+from dwave.graphs import chimera_coordinates, chimera_two_color, pegasus_coordinates, pegasus_four_color, zephyr_coordinates, zephyr_four_color
 
-from dwave.experimental.embedding_methods.quotient_embedding_search import (
-    _normalize_coordinate,
-)
 
 __all__ = ["find_labeled_subgraph"]
 
 
 def node_labels_by_orientation(
-    graph: nx.Graph, as_str: bool = True
+    graph: nx.Graph,
+    as_str: bool = True,
+    label: str | None = None,
+    family: str | None = None,
+    shape: tuple | None = None,
 ) -> dict[Hashable, str] | dict[Hashable, int]:
     """Generate node labels from graph orientation classes.
 
@@ -41,6 +42,9 @@ def node_labels_by_orientation(
         graph: Input graph whose nodes will be labeled by orientation.
         as_str: If ``True``, convert orientation labels to strings before returning. If
             ``False``, preserve the integer labels. Defaults to ``True``.
+        label: The node label type ("int", "coordinate" or "nice"). If ``None``, the label type is inferred from the graph's metadata.
+        family: The graph family ("chimera", "pegasus", or "zephyr"). If ``None``, the family is inferred from the graph's metadata.
+        shape: The shape of the graph. If ``None``, the shape is inferred from the graph's metadata.
 
     Returns:
         A dictionary mapping graph nodes to orientation labels.
@@ -49,11 +53,17 @@ def node_labels_by_orientation(
         ValueError: If greedy coloring is used and produces
             more than two colors.
     """
-    match graph.graph.get("family", None):
-        case "pegasus" | "zephyr":
-            col = {n: n[0] for n in graph.nodes()}
-        case "chimera":
-            col = {n: n[2] for n in graph.nodes()}
+    if family is None:
+        family = graph.graph.get("family", None)
+    if label is None:
+        label = graph.graph.get("labels", None)
+    if shape is None:
+        shape = graph_shape(graph)
+    match family:
+        case "chimera" | "pegasus" | "zephyr":
+            to_coord = graph_label_to_graph_label(family, shape, label, "coordinate")
+            axis = 2 if family == "chimera" else 0
+            col = {n: to_coord(n)[axis] for n in graph.nodes()}
         case _:
             col = nx.greedy_color(graph)
             if len(set(col.values())) != 2:
@@ -68,7 +78,11 @@ def node_labels_by_orientation(
 
 
 def node_labels_by_coloring(
-    graph: nx.Graph, as_str: bool = True
+    graph: nx.Graph, 
+    as_str: bool = True,
+    label: str | None = None,
+    family: str | None = None,
+    shape: tuple | None = None
 ) -> dict[Hashable, str] | dict[Hashable, int]:
     """Generate node labels from a family-specific graph coloring.
 
@@ -85,25 +99,33 @@ def node_labels_by_coloring(
             a family-specific coloring method where available.
         as_str: If ``True``, convert color labels to strings before returning. If
             ``False``, preserve the integer color labels. Defaults to ``True``.
-
+        family: The graph family ("chimera", "pegasus", or "zephyr"). If ``None``, the family is inferred from the graph's metadata.
+        label: The node label type ("int", "coordinate" or "nice"). If ``None``, the label type is inferred from the graph's metadata.
+        shape: The shape of the graph. If ``None``, the shape is inferred from the graph's metadata.
+    Raises:
+        ValueError: If the graph family is not supported.
     Returns:
         A dictionary mapping graph nodes to color labels.
     """
-    if "family" in graph.graph and graph.graph["family"] in (
+    if family is None:
+        family = graph.graph.get("family", None)
+    if label is None:
+        label = graph.graph.get("labels", None)
+    if shape is None:
+        shape = graph_shape(graph) 
+    if family in (
         "chimera",
         "pegasus",
         "zephyr",
     ):
-        graph, to_source = _normalize_coordinate(
-            graph, graph.graph["rows"], graph.graph["tile"]
-        )
-        if graph.graph["family"] == "chimera":
-            col = {n: chimera_two_color(n) for n in graph.nodes()}
-        elif graph.graph["family"] == "pegasus":
-            col = {n: pegasus_four_color(n) for n in graph.nodes()}
-        elif graph.graph["family"] == "zephyr":
-            col = {n: zephyr_four_color(n) for n in graph.nodes()}
-        col = {to_source(n): color for n, color in col.items()}
+        to_coord = graph_label_to_graph_label(family, shape, label, "coordinate")
+        match family:
+            case "chimera":
+                col = {n: chimera_two_color(to_coord(n)) for n in graph.nodes()}
+            case "pegasus":
+                col = {n: pegasus_four_color(to_coord(n)) for n in graph.nodes()}
+            case "zephyr":
+                col = {n: zephyr_four_color(to_coord(n)) for n in graph.nodes()}
     else:
         col = nx.greedy_color(graph)
 
@@ -112,9 +134,80 @@ def node_labels_by_coloring(
 
     return col
 
+def graph_shape(graph: nx.Graph) -> None | tuple:
+    """Return the shape of a graph based on its family and metadata.
+
+    Args:
+        graph: A NetworkX graph with family metadata.
+    Returns:
+        A tuple representing the shape of the graph, which varies based on the graph family.
+    """
+    graph_family = graph.graph.get("family", None)
+    if graph_family == "chimera":
+        return (graph.graph["rows"], graph.graph["columns"], graph.graph["tile"])
+    elif graph_family == "pegasus":
+        return (graph.graph["rows"],)
+    elif graph_family == "zephyr":
+        return (graph.graph["rows"], graph.graph["tile"])
+    else:
+        return None
+
+def graph_label_to_graph_label(graph_family: str, shape: tuple, label_one: str, label_two: str)->Callable:
+    """Return a function that maps a node label of int/coordinate/nice type to another.
+
+    Args:
+        graph_family: The family of the graph (e.g., 'chimera', 'pegasus', 'zephyr').
+        shape: The shape of the graph (e.g., (m, t) for Zephyr).
+        label_one: The type of the input label (e.g., 'coordinate', 'int').
+        label_two: The type of the output label (e.g., 'coordinate', 'int').
+
+    Returns:
+        A function that takes a node label of type `label_one` and returns
+        the corresponding node label of type `label_two`.
+    """
+    if label_one != label_two:
+        match graph_family:
+            case "chimera":
+                coordinates = chimera_coordinates(*shape)
+                if label_one == "coordinate" and label_two == "int":
+                    return coordinates.chimera_to_linear
+                elif label_one == "int" and label_two == "coordinate":
+                    return coordinates.linear_to_chimera
+            case "pegasus":
+                coordinates = pegasus_coordinates(*shape)
+                match (label_one, label_two):
+                    case ("coordinate", "int"):
+                        return coordinates.pegasus_to_linear
+                    case ("coordinate", "nice"):
+                        return coordinates.pegasus_to_nice
+                    case ("nice", "coordinate"):
+                        return coordinates.nice_to_pegasus
+                    case ("nice", "int"):
+                        return coordinates.nice_to_linear
+                    case ("int", "coordinate"):
+                        return coordinates.linear_to_pegasus
+                    case ("int", "nice"):
+                        return coordinates.linear_to_nice
+            case "zephyr":
+                coordinates = zephyr_coordinates(*shape)
+                if label_one == "coordinate" and label_two == "int":
+                    return coordinates.zephyr_to_linear
+                elif label_one == "int" and label_two == "coordinate":
+                    return coordinates.linear_to_zephyr
+            case _:
+                raise ValueError(f"Unsupported graph family: {graph_family}")
+    else:
+        return lambda n: n
+
+    raise ValueError(f"Unsupported label conversion: {label_one} to {label_two} for ")
 
 def node_labels_by_quotient(
-    graph: nx.Graph, expand_boundary_search: bool = True, as_str: bool = True
+    graph: nx.Graph, 
+    expand_boundary_search: bool = True, 
+    as_str: bool = True,
+    label: str | None = None,
+    family: str | None = None,
+    shape: tuple | None = None
 ) -> dict[Hashable, str] | dict[Hashable, tuple]:
     """Generate quotient graph labels for nodes based on graph family and structure.
 
@@ -133,40 +226,57 @@ def node_labels_by_quotient(
             block offset) nodes. Defaults to ``True``.
         as_str: If ``True``, labels are converted to strings. If ``False``, labels
             remain as tuples. Defaults to ``True``.
-
+        label: The node label type ("int", "coordinate" or "nice"). If ``None``, the label type is inferred from the graph's metadata.
+        family: The graph family ("chimera", "pegasus", or "zephyr"). If ``None``, the family is inferred from the graph's metadata.
+        shape: The shape of the graph. If ``None``, the shape is inferred from the graph's metadata.
     Returns:
-        A dictionary mapping node coordinates to quotient labels.
+        A dictionary mapping node coordinates to quotient labels. The type of the labels
+        depends on the ``as_str`` parameter: if ``True``, labels are strings; if ``False``,
+        labels are tuples.
 
     Raises:
         ValueError: If graph family is not found in metadata or is not 'zephyr',
             'pegasus', or 'chimera'.
     """
-    if "family" in graph.graph and graph.graph["family"] in (
+    if family is None:
+        family = graph.graph.get("family", None)
+    if family in (
         "chimera",
         "pegasus",
         "zephyr",
     ):
-        graph, to_source = _normalize_coordinate(
-            graph, graph.graph["rows"], graph.graph["tile"]
-        )
-        if graph.graph["family"] == "chimera":
-            col = {to_source(n): n[:3] for n in graph.nodes()}
-        elif graph.graph["family"] == "pegasus":
-            col = {to_source(n): n[:2] + (n[2] // 2,) + n[3:] for n in graph.nodes()}
-        elif graph.graph["family"] == "zephyr":
-            if expand_boundary_search:
-                m = graph.graph["rows"]
-
-                wmap = {0: 1, 2 * m: 2 * m - 1}
-                col = {
-                    to_source(n): n[:1] + (wmap.get(n[1], n[1]),) + n[3:]
-                    for n in graph.nodes()
-                }
-            else:
-                col = {to_source(n): n[:2] + n[3:] for n in graph.nodes()}
+        if label is None:
+            label = graph.graph.get("labels", None)
+        if shape is None:
+            shape = graph_shape(graph)
+        if label is None:
+            label = "coordinate"
+        if label != "coordinate":
+            graph = nx.relabel_nodes(
+                graph, 
+                graph_label_to_graph_label(family, shape, label, "coordinate"))
+        match family:
+            case "chimera":
+                col = {n: n[:3] for n in graph.nodes()}
+            case "pegasus":
+                col = {n: n[:2] + (n[2] // 2,) + n[3:] for n in graph.nodes()}
+            case "zephyr":
+                if expand_boundary_search:
+                    m = graph.graph["rows"]
+                    wmap = {0: 1, 2 * m: 2 * m - 1}
+                    col = {
+                        n: n[:1] + (wmap.get(n[1], n[1]),) + n[3:]
+                        for n in graph.nodes()
+                    }
+                else:
+                    col = {n: n[:2] + n[3:] for n in graph.nodes()}
     else:
         raise ValueError("Unrecognized graph family")
-
+    if label != "coordinate":
+        to_label = graph_label_to_graph_label(family, shape, "coordinate", label)
+        col = {
+            to_label(k): v for k, v in col.items()
+        }
     if as_str:
         # Whitespace-free: find_subgraph's underlying vertex-label parser rejects labels
         # containing spaces, which the default tuple repr would otherwise include.
