@@ -240,7 +240,7 @@ def _normalize_coordinate(
     t: int,
     add_singleton_nodes: bool = False,
     graph_family: GraphFamily | None = None,
-    graph_labels: Literal["coordinate", "int"] | None = None,
+    graph_labels: Literal["coordinate", "int", "nice"] | None = None,
     graph_shape: tuple | None = None
 ) -> tuple[nx.Graph, Callable[[tuple], Hashable]]:
     """Transform to a coordinated dwave.graph compatible family for processing.
