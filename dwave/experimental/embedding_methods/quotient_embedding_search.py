@@ -20,13 +20,13 @@ import networkx as nx
 import numpy as np
 from dwave.embedding import verify_embedding
 from dwave.graphs import (
-    zephyr_coordinates,
     zephyr_graph,
-    pegasus_coordinates,
     pegasus_graph,
-    chimera_coordinates,
     chimera_graph,
 )
+from dwave.experimental.embedding_methods.labeled_subgraph import (
+    get_graph_shape,
+    graph_label_mapping)
 
 __all__ = ["greedy_quotient_sublattice_mapping"]
 
@@ -241,6 +241,7 @@ def _normalize_coordinate(
     add_singleton_nodes: bool = False,
     graph_family: GraphFamily | None = None,
     graph_labels: Literal["coordinate", "int"] | None = None,
+    graph_shape: tuple | None = None
 ) -> tuple[nx.Graph, Callable[[tuple], Hashable]]:
     """Transform to a coordinated dwave.graph compatible family for processing.
 
@@ -255,8 +256,10 @@ def _normalize_coordinate(
             coordinate-labelled source graph as singleton nodes.
         graph_family: Optional graph family. If not provided, it is inferred from
             the graph metadata.
-        graph_labels: Final graph label preference (int or coordinate).
+        graph_labels: graph node type (int or coordinate).
             If not provided, it is inferred from the graph metadata.
+        graph_shape: Optional graph shape. If not provided, it is inferred from the graph metadata.
+
     Returns:
         coordinate-labelled (tuple) source graph and a callable that maps
         coordinate nodes back to the original source labelling space
@@ -265,45 +268,26 @@ def _normalize_coordinate(
         ValueError: If source labels are unsupported.
     """
     if graph_family is None:
-        graph_family = graph.graph["family"]
+        graph_family = graph.graph.get("family", None)
     if graph_labels is None:
-        graph_labels = graph.graph["labels"]
-
+        graph_labels = graph.graph.get("labels",None)
+    if graph_shape is None:
+        graph_shape = get_graph_shape(graph)
+    glm = graph_label_mapping(graph_family, graph_shape, graph_labels, "coordinate")
+    
     match graph_family:
         case "zephyr":
             graph_generator = zephyr_graph
-            shape = (m, t)
-            coords = zephyr_coordinates(*shape)
-            coord_to_linear = coords.zephyr_to_linear
-            to_tuple = coords.linear_to_zephyr
         case "pegasus":
             graph_generator = pegasus_graph
-            shape = (m,)
-            coords = pegasus_coordinates(*shape)
-            coord_to_linear = coords.pegasus_to_linear
-            to_tuple = coords.linear_to_pegasus
         case "chimera":
-            shape = (m, m, t)
             graph_generator = chimera_graph
-            coords = chimera_coordinates(*shape)
-            coord_to_linear = coords.chimera_to_linear
-            to_tuple = coords.linear_to_chimera
         case _:
             raise ValueError(f"Unknown graph family {graph_family}")
     # As necessary convert edge_list to coordinates and define inversion
-    match graph_labels:
-        case "int":
-            edge_list = [(to_tuple(n1), to_tuple(n2)) for n1, n2 in graph.edges()]
-            node_list = [to_tuple(n) for n in graph.nodes()]
-            to_linear = coord_to_linear
-        case "coordinate":
-            edge_list = graph.edges()
-            node_list = graph.nodes()
-            to_linear: Callable[[tuple], tuple] = lambda n: n
-        case _:
-            raise ValueError("source graph has unknown labeling scheme")
+    edge_list = [(glm(n1), glm(n2)) for n1, n2 in graph.edges()]
 
-    generator_args = dict(coordinates=True, node_list=node_list, edge_list=edge_list)
+    generator_args = dict(coordinates=True, edge_list=edge_list)
     if add_singleton_nodes:
         if graph.graph["family"] == "pegasus":
             # For Pegasus, we need to add singleton nodes with odd k indices to
@@ -316,11 +300,10 @@ def _normalize_coordinate(
                 for z in range(m - 1)
             ]
             generator_args["fabric_only"] = False
-        else:
-            # Default works
-            generator_args["node_list"] = None
+    else:
+        generator_args["node_list"] = [glm(n) for n in graph.nodes()]
 
-    _source = graph_generator(*shape, **generator_args)
+    _source = graph_generator(*graph_shape, **generator_args)
     if graph.graph["family"] == "pegasus" and t == 1:
         # Pegasus quotient search only works for single-rail source graphs, which are
         # defined by having only even k indices.
@@ -331,7 +314,7 @@ def _normalize_coordinate(
                 "contains nodes with even k indices, which defines a pegasus "
                 "subgraph with single rails as opposed to pairs of rails."
             )
-    return _source, to_linear
+    return _source, graph_label_mapping(graph_family, graph_shape, "coordinate", graph_labels)
 
 
 def _boundary_proposals(

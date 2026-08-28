@@ -26,8 +26,8 @@ from dwave.graphs import (
 
 from dwave.experimental.embedding_methods.labeled_subgraph import (
     find_labeled_subgraph,
-    graph_label_to_graph_label,
-    graph_shape,
+    graph_label_mapping,
+    get_graph_shape,
     node_labels_by_coloring,
     node_labels_by_orientation,
     node_labels_by_quotient,
@@ -54,14 +54,6 @@ class TestNodeLabelHelpers(unittest.TestCase):
         self.assertEqual(set(labels), set(graph.nodes()))
         for node in graph.nodes():
             self.assertEqual(labels[node], node[2])
-
-    def test_node_labels_by_coloring_preserves_original_linear_labels(self):
-        graph = zephyr_graph(2, 2, coordinates=False)
-
-        labels = node_labels_by_coloring(graph, as_str=False)
-
-        self.assertEqual(set(labels), set(graph.nodes()))
-        self.assertTrue(set(labels.values()).issubset({0, 1, 2, 3}))
 
     def test_node_labels_by_coloring_chimera_matches_per_node_two_color(self):
         # Regression test: coloring must be computed per node, not once for the
@@ -265,24 +257,28 @@ class TestFindLabeledSubgraphLabelingDispatch(unittest.TestCase):
 
 # (family, graph builder taking a `coordinates` flag, shape) for parameterized tests.
 _FAMILY_CASES = [
-    ("chimera", lambda coordinates: chimera_graph(2, t=2, coordinates=coordinates), (2, 2, 2)),
+    (
+        "chimera",
+        lambda coordinates: chimera_graph(2, t=2, coordinates=coordinates),
+        (2, 2, 2),
+    ),
     ("zephyr", lambda coordinates: zephyr_graph(2, 2, coordinates=coordinates), (2, 2)),
     ("pegasus", lambda coordinates: pegasus_graph(3, coordinates=coordinates), (3,)),
 ]
 
 
 class TestGraphShape(unittest.TestCase):
-    """Tests for the graph_shape metadata helper."""
+    """Tests for the get_graph_shape metadata helper."""
 
     def test_returns_expected_shape_per_family(self):
         expected = {"chimera": (2, 2, 2), "zephyr": (2, 2), "pegasus": (3,)}
         for family, build, shape in _FAMILY_CASES:
             with self.subTest(family=family):
-                self.assertEqual(graph_shape(build(True)), expected[family])
+                self.assertEqual(get_graph_shape(build(True)), expected[family])
                 self.assertEqual(shape, expected[family])
 
     def test_returns_none_for_unknown_family(self):
-        self.assertIsNone(graph_shape(nx.path_graph(3)))
+        self.assertIsNone(get_graph_shape(nx.path_graph(3)))
 
 
 class TestGraphLabelToGraphLabel(unittest.TestCase):
@@ -292,30 +288,37 @@ class TestGraphLabelToGraphLabel(unittest.TestCase):
         for family, build, shape in _FAMILY_CASES:
             with self.subTest(family=family):
                 graph = build(True)
-                to_int = graph_label_to_graph_label(family, shape, "coordinate", "int")
-                to_coord = graph_label_to_graph_label(family, shape, "int", "coordinate")
+                to_int = graph_label_mapping(family, shape, "coordinate", "int")
+                to_coord = graph_label_mapping(family, shape, "int", "coordinate")
                 for node in graph.nodes():
                     self.assertEqual(to_coord(to_int(node)), node)
 
     def test_pegasus_nice_roundtrip(self):
         graph = pegasus_graph(3, coordinates=True)
-        to_nice = graph_label_to_graph_label("pegasus", (3,), "coordinate", "nice")
-        to_coord = graph_label_to_graph_label("pegasus", (3,), "nice", "coordinate")
+        to_nice = graph_label_mapping("pegasus", (3,), "coordinate", "nice")
+        to_coord = graph_label_mapping("pegasus", (3,), "nice", "coordinate")
         for node in graph.nodes():
             self.assertEqual(to_coord(to_nice(node)), node)
 
+    def test_pegasus_int_nice_roundtrip(self):
+        graph = pegasus_graph(3, coordinates=False)
+        to_nice = graph_label_mapping("pegasus", (3,), "int", "nice")
+        to_int = graph_label_mapping("pegasus", (3,), "nice", "int")
+        for node in graph.nodes():
+            self.assertEqual(to_int(to_nice(node)), node)
+
     def test_identity_when_labels_match(self):
-        identity = graph_label_to_graph_label("chimera", (2, 2, 2), "int", "int")
+        identity = graph_label_mapping("chimera", (2, 2, 2), "int", "int")
         self.assertEqual(identity(5), 5)
 
     def test_unsupported_family_raises(self):
         with self.assertRaises(ValueError):
-            graph_label_to_graph_label("bogus", (2,), "int", "coordinate")
+            graph_label_mapping("bogus", (2,), "int", "coordinate")
 
     def test_unsupported_conversion_raises(self):
         # Chimera has no "nice" coordinate system.
         with self.assertRaises(ValueError):
-            graph_label_to_graph_label("chimera", (2, 2, 2), "int", "nice")
+            graph_label_mapping("chimera", (2, 2, 2), "int", "nice")
 
 
 class TestLabelingRepresentationInvariance(unittest.TestCase):
@@ -326,9 +329,7 @@ class TestLabelingRepresentationInvariance(unittest.TestCase):
             with self.subTest(function=fn.__name__, family=family):
                 coord_labels = fn(build(True), as_str=False)
                 int_labels = fn(build(False), as_str=False)
-                to_coord = graph_label_to_graph_label(
-                    family, shape, "int", "coordinate"
-                )
+                to_coord = graph_label_mapping(family, shape, "int", "coordinate")
                 remapped = {to_coord(k): v for k, v in int_labels.items()}
                 self.assertEqual(remapped, coord_labels)
 
@@ -389,8 +390,23 @@ class TestNiceLabeledPegasus(unittest.TestCase):
     def test_explicit_family_label_shape_override_metadata(self):
         graph = chimera_graph(2, t=2, coordinates=False)
         labels = node_labels_by_coloring(
-            graph, as_str=False, family="chimera", label="int", shape=(2, 2, 2)
+            graph,
+            as_str=False,
+            graph_family="chimera",
+            graph_labels="int",
+            graph_shape=(2, 2, 2),
         )
         self.assertEqual(set(labels), set(graph.nodes()))
         self.assertEqual(set(labels.values()), {0, 1})
 
+    def test_quotient_defaults_to_coordinate_without_labels_metadata(self):
+        # A supported-family graph missing "labels" metadata is treated as
+        # coordinate-labeled.
+        graph = chimera_graph(2, t=2, coordinates=True)
+        del graph.graph["labels"]
+
+        labels = node_labels_by_quotient(graph, as_str=False)
+
+        self.assertEqual(set(labels), set(graph.nodes()))
+        for node in graph.nodes():
+            self.assertEqual(labels[node], node[:3])

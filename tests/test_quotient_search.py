@@ -532,21 +532,21 @@ class TestSearchParameterValidation(unittest.TestCase):
 
 
 class TestLabelingSchemeErrors(unittest.TestCase):
-    """Tests for ValueError raised by _ensure_coordinate_source /
-    _ensure_coordinate_target."""
+    """Tests for ValueError raised when a graph declares an unsupported node
+    labeling scheme (propagated from graph_label_mapping)."""
 
     def test_unknown_source_labels_raises_value_error(self):
         source = zephyr_graph(6, 2, coordinates=True)
         source.graph["labels"] = "custom_scheme"
         target = zephyr_graph(6, 4, coordinates=True)
-        with self.assertRaisesRegex(ValueError, r"unknown labeling scheme"):
+        with self.assertRaisesRegex(ValueError, r"Unsupported label conversion"):
             greedy_quotient_sublattice_mapping(source, target)
 
     def test_unknown_target_labels_raises_value_error(self):
         source = zephyr_graph(6, 2, coordinates=True)
         target = zephyr_graph(6, 4, coordinates=True)
         target.graph["labels"] = "custom_scheme"
-        with self.assertRaisesRegex(ValueError, r"unknown labeling scheme"):
+        with self.assertRaisesRegex(ValueError, r"Unsupported label conversion"):
             greedy_quotient_sublattice_mapping(source, target)
 
 
@@ -596,6 +596,24 @@ class TestNodeSearchDirect(unittest.TestCase):
         source.graph["family"] = target.graph["family"] = "unsupported_family"
         with self.assertRaisesRegex(ValueError, r"Unknown family"):
             _node_search(source, target, embedding={}, expand_boundary_search=False)
+
+    def test_edge_yield_asymmetric_assigns_unassigned_blocks(self):
+        # With ksymmetric=False and yield_type="edge", the permutation branch
+        # scores each block; an as-yet-unassigned block (existing entries None)
+        # must be accepted rather than compared against a nonexistent assignment.
+        source = zephyr_graph(2, 2, coordinates=True)
+        target = zephyr_graph(2, 2, coordinates=True)
+
+        embedding = _node_search(
+            source,
+            target,
+            embedding={},
+            expand_boundary_search=False,
+            ksymmetric=False,
+            yield_type="edge",
+        )
+
+        self.assertEqual(set(embedding), set(source.nodes()))
 
 
 class TestRailHelpersDirect(unittest.TestCase):
