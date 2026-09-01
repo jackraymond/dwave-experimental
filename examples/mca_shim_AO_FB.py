@@ -730,7 +730,7 @@ def main(
     plt.plot(
         [target_c, target_c],
         [0, np.max(delta_vs_s["A(s) (GHz)"])],
-        label=f"c={target_c}",
+        label=f"c={target_c:.3g}",
     )
     plt.plot(
         [0, target_c - 0.01],
@@ -1103,75 +1103,39 @@ def main(
         "Plotting real-space data and power spectral density (discrete Fourier transform)."
     )
 
+    line_exemplars = {line_assignments[emb[0][0]]: idx for idx, emb in enumerate(embs)}
+    
     plt.figure("Timeseries")
     plt.title("Time series for several qubits using distinct target lines")
-
-    line_targets = set()
-    for idx, emb in enumerate(embs):
-        q = emb[0][0]
-        line_target = line_assignments[q]
-        if line_target not in line_targets:
-            plt.plot(
-                delays * 1000,
-                mean_Z_detector[:, idx],
-                color=line_color[line_target],
-                label=f"target line {line_target}",
-            )
-            line_targets.add(line_target)
-    plt.ylabel("Detector magnetizations")
-    plt.xlabel("Detector delay, ns")
-    plt.legend()
-    plt.grid()
-
-    plt.figure("Timeseries_divergent_colormap")
-    plt.title("Real space magnetizations (divergent colormap)")
-    plt.imshow(mean_Z_detector, vmin=-1, vmax=1, cmap="RdBu")
-    yticks_dict = {
-        first: f"{1000 * delays[first]:.3g}",
-        last - 1: f"{1000 * delays[last-1]:.3g}",
-    }
-    yticks_dict.update(
-        {0: str(1000 * delays[0]), mean_Z_detector.shape[0] - 1: str(1000 * delays[-1])}
+    _plot_time_series(
+        embs,
+        line_assignments,
+        mean_Z_detector,
+        delays * 1000,
+        line_color,
+        plotted_emb_idxs=line_exemplars.values(),
+        label_emb_idxs=line_exemplars.values(),
     )
-    plt.yticks(
-        list(yticks_dict.keys()),
-        list(yticks_dict.values()),
-    )
-    plt.xlabel("Target-Detector-Source embedding")
-    plt.ylabel("Delay, nanoseconds")
-
-    plt.figure("Timeseries_default_colormap")
-    plt.title("Real space magnetizations (default colormap)")
-    plt.imshow(mean_Z_detector[first:last, :])
-    yticks_dictN = {
-        0: f"{1000 * delays[first]:.3g}",
-        last - first - 1: f"{1000 * delays[last-1]:.3g}",
-    }
-    plt.yticks(
-        list(yticks_dictN.keys()),
-        list(yticks_dictN.values()),
-    )
-    plt.xlabel("Target-Detector-Source embedding")
-    plt.ylabel("Delay, nanoseconds")
-
-    plt.figure("PSD")
-    plt.title("Power associated to magnetization time series")
-    lines_represented = set()
-    for i, emb in enumerate(embs):
-        q = emb[0][0]
-        line_target = line_assignments[q]
-        if line_target in lines_represented:
-            label = None
-        else:
-            label = f"target-qubit line={line_target}"
-            lines_represented.add(line_target)
-        plt.plot(
-            frequencies[: ld // 2],
-            psd[i, : ld // 2],
-            color=line_color[line_target],
-            label=label,
+    for colormap_type in ["divergent", "default"]:
+        imshow_data(
+            mean_Z_detector=mean_Z_detector,
+            delays=delays,
+            colormap_type=colormap_type,
+            first=first,
+            last=last,
         )
-
+    plt.figure("PSD")
+    plt.title("Power associated with magnetization time series")
+    _plot_time_series(
+        embs,
+        line_assignments,
+        psd[:, : ld // 2].T,
+        frequencies[: ld // 2],
+        line_color,
+        label_emb_idxs=line_exemplars.values(),
+        xlabel=r"Frequency ($\omega$), GHz",
+        ylabel=r"Power Spectral Density, $|\langle Z\rangle(\omega)|^2$",
+    )
     plt.plot(
         [target_A, target_A],
         [0, np.max(psd)],
@@ -1239,22 +1203,15 @@ def main(
 
         plt.figure("Timeseries_after_anneal_offsets")
         plt.title("Time series after anneal_offsets")
-        line_targets = set()
-        for i, emb in enumerate(embs):
-            q = emb[0][0]
-            line_target = line_assignments[q]
-            if line_target not in line_targets:
-                plt.plot(
-                    delays * 1000,
-                    mean_Z_detector[:, i],
-                    color=line_color[line_target],
-                    label=f"target line {line_target}",
-                )
-                line_targets.add(line_target)
-        plt.ylabel("Detector magnetizations")
-        plt.xlabel("Detector delay, ns")
-        plt.legend()
-        plt.grid()
+        _plot_time_series(
+            embs,
+            line_assignments,
+            mean_Z_detector,
+            delays * 1000,
+            line_color,
+            plotted_emb_idxs=line_exemplars.values(),
+            label_emb_idxs=line_exemplars.values(),
+        )
         for colormap_type in ["divergent", "default"]:
             imshow_data(
                 mean_Z_detector=mean_Z_detector,
@@ -1269,20 +1226,16 @@ def main(
         plt.title(
             "Power associated with magnetization time series after anneal offsets"
         )
-        for emb_idx, emb in enumerate(embs):
-            q = emb[0][0]
-            line_target = line_assignments[q]
-            if line_target in lines_represented:
-                label = None
-            else:
-                label = f"target-qubit line={line_target}"
-                lines_represented.add(line_target)
-            plt.plot(
-                frequencies[: ld // 2],
-                psd[i, : ld // 2],
-                color=line_color[line_target],
-                label=label,
-            )
+        _plot_time_series(
+            embs,
+            line_assignments,
+            psd[:, : ld // 2].T,
+            frequencies[: ld // 2],
+            line_color,
+            label_emb_idxs=line_exemplars.values(),
+            xlabel=r"Frequency ($\omega$), GHz",
+            ylabel=r"Power Spectral Density, $|\langle Z\rangle(\omega)|^2$",
+        )
         plt.plot(
             [target_A, target_A],
             [0, np.max(psd)],
@@ -1291,23 +1244,20 @@ def main(
             label="Schedule prediction",
         )
         plt.legend()
-        plt.ylabel(r"Power Spectral Density, $|\langle Z\rangle(\omega)|^2$")
-        plt.xlabel(r"Frequency ($\omega$), GHz")
-        plt.grid(True)
-
+        
         plt.figure("AnnealOffsets")
         anneal_offsets0 = anneal_offsets
         anneal_offsets = _calc_anneal_offsets(
             frequencies, psd, target_A, dAdc
         )  # Per embedding
+        legend_idxs = set(line_exemplars.values())
         for emb_idx, emb in enumerate(embs):
             q = emb[0][0]
             line_target = line_assignments[q]
-            if line_target in lines_represented:
-                label = None
-            else:
+            if emb_idx in legend_idxs:
                 label = f"target-qubit line={line_target}"
-                lines_represented.add(line_target)
+            else:
+                label = None
             plt.plot(
                 anneal_offsets0[i],
                 anneal_offsets[i],
