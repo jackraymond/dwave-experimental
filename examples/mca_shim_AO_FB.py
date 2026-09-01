@@ -482,6 +482,8 @@ def _get_experiment_id(
     vars_args.pop(
         "save_figures", None
     )  # save_figures is not relevant to the experiment data, so we exclude it from the hash
+    if vars_args.get('solver_name', None) == SOLVER_FILTER:
+        vars_args['solver_name'] = 'DefaultSolver'
     args_string = json.dumps(vars_args, sort_keys=True)
     identifier = hashlib.sha256(args_string.encode("utf-8")).hexdigest()[:num_char]
     if verbose:
@@ -962,45 +964,13 @@ def main(
         q = emb[0][0]
         embs_by_line[line_assignments[q]].append(emb)
 
-    embs = [emb for i in range(num_lines) for emb in embs_by_line[i]]
+    embs = [emb for i in target_lines for emb in embs_by_line[i]]
 
     sampler = ParallelEmbeddingComposite(qpu, embeddings=embs)
 
     dt = 1 / target_A / 1000 / 4  # Appropriate scale for frequency resolution.
     delays = np.linspace(delay_min, delay_max, round((delay_max - delay_min) / dt) + 1)
 
-    # Demonstrate some data for simple model y(t) = cos(2 pi A [t + t0]) exp(- [t + t0]/d):
-    delays_ns = 5 * np.random.random() + 1000 * delays
-    ld = len(delays_ns)
-    frequencies = np.arange(ld) / dt / 1000 / ld
-    for idx, A in enumerate([target_Aminus, target_A, target_Aplus]):
-        for num_independent_samples in [100, float("Inf")]:
-            signal = artificial_data(
-                delays_ns,
-                A,
-                num_independent_samples=num_independent_samples,
-            )
-            if num_independent_samples == float("Inf") and idx == 1:
-                label = f"A={A:.3g}, no sample err."
-            elif num_independent_samples == 100:
-                label = f"A={A:.3g}"
-            else:
-                continue
-
-            plt.figure("artificial_timeseries")
-            plt.title("y=cos(2pi A t)exp(-t/T)+sampling error")
-            plt.plot(delays_ns, signal, label=label)
-            plt.xlabel("Time, microseconds")
-            plt.ylabel(r"Magnetization, $\langle Z \rangle_{detector}$")
-            plt.legend()
-
-            plt.figure("artificial_psd")
-            plt.title("Approx Lorentzian power spectral density ~ A/((f-A)^2 + A^2)")
-            psd = np.abs(np.fft.fft(signal)) ** 2 / len(signal)
-            plt.plot(frequencies[: ld // 2], psd[: ld // 2], label=label)
-            plt.ylabel(r"Power Spectral Density, $|\langle Z\rangle(\omega)|^2$")
-            plt.xlabel(r"Frequency ($\omega$), GHz")
-            plt.legend()
     bqm = dimod.BinaryQuadraticModel("SPIN").from_ising(
         {n: 0 for n in S.nodes()}, {e: -1 for e in S.edges()}
     )
@@ -1515,7 +1485,7 @@ if __name__ == "__main__":
         detector_lines=tuple(args.detector_lines),
         source_lines=tuple(args.source_lines),
         target_A=args.target_A,
-        fn_schedule=args.schedule_fn,
+        schedule_fn=args.schedule_fn,
         delay_min=args.delay_min,
         delay_max=args.delay_max,
         delay_min_fit=args.delay_min_fit,
