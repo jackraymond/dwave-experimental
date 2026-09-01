@@ -1038,17 +1038,15 @@ def main(
                     sampling_params=sampling_params,
                     shimmed_variables=shimmed_variables,
                 )
-                # np.save("flux_biases.npy", flux_biases)  # reinstate for debugging.
-                polarization_candidates = [(i, flux_biases[i]) for i in range(len(flux_biases)) if abs(flux_biases[i]) > 1e-4]
-                if polarization_candidates:
-                    print("WARNING: Anomalously large flux biases could indicate "
-                          "a calibration issue, check magnetization plots "
-                          "for evidence of polarization and report bad qubits.")
-                    print(polarization_candidates)
                 sampling_params["x_schedule_delays"] = x_schedule_delays
             else:
                 raise ValueError("Unknown method")
-
+            polarization_candidates = [(i, flux_biases[i]) for i in range(len(flux_biases)) if abs(flux_biases[i]) > 1e-4]
+            if polarization_candidates:
+                print("WARNING: Anomalously large flux biases could indicate "
+                          "a calibration issue, check magnetization plots "
+                      "for evidence of polarization and report bad qubits.")
+                print(polarization_candidates)
             if cache_str:
                 os.makedirs(os.path.dirname(fn_cache), exist_ok=True)
                 with open(fn_cache, "wb") as f:
@@ -1259,8 +1257,8 @@ def main(
             else:
                 label = None
             plt.plot(
-                anneal_offsets0[i],
-                anneal_offsets[i],
+                anneal_offsets0[emb_idx],
+                anneal_offsets[emb_idx],
                 color=line_color[line_target],
                 marker="x",
                 label=label,
@@ -1356,14 +1354,14 @@ if __name__ == "__main__":
         dest="delay_min",
         type=float,
         help="Initial delay time (us) for data collection",
-        default=0.015,
+        default=0.0,
     )
     parser.add_argument(
         "--delay-max",
         dest="delay_max",
         type=float,
         help="Final delay time (us) for data collection",
-        default=0.025,  # Oscillations not completely decayed
+        default=0.015,  # Oscillations not completely decayed
     )
     parser.add_argument(
         "--delay-min-fit",
