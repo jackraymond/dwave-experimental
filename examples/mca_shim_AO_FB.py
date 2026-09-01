@@ -46,7 +46,7 @@ from dwave.experimental.multicolor_anneal import (
     get_properties,
     make_tds_graph,
     make_tds_x_schedules,
-    make_tds_x_schedule_delays,
+#   make_tds_x_schedule_delays,
     SOLVER_FILTER,
 )
 from dwave.experimental.shimming import shim_flux_biases, shim_tds_flux_biases
@@ -131,28 +131,110 @@ def _calc_anneal_offsets(
     return dcs
 
 
-def make_y(
-    delays: np.ndarray, A: float, T2: float = 0.0101, sign_Jts_fbs: int = -1
+def make_yC(
+    delays: np.ndarray,
+    A: float,
+    *,
+    T2: float = 0.0101,
+    phi_s: float = 0.0,
+    phi_d: float = 0.0,
 ) -> np.ndarray:
-    """Make a noise-free model signal
+    """Make a noise-free model signal for computational basis preparation and detection.
 
-    y(t) = sign(J) cos(2* pi * A * t) exp(-t/T2) for t >0, and
-           sign(J) for t < 0
+    Eq 6. from arXiv 2603.15534 at theta_d = theta_s = pi/2
+    Note that this model assumes decoupling from the source, and ideally
+    controlled flux biases (in particular note phi_q=0 on the target).
+    The source polarization is assumed to be instantaneously removed at delay t=0,
+    with measurement performed at delay t.
+
+    y(t) = cos(2* pi * A * t + phi_s - phi_d) exp(-t/T2)
+
     Args:
-        delays: time(s) of measurement
+        delays: Measurement times (microseconds)
         A: frequency
         T2: exponential envelope time scale. Defaulted as
             from T_phi = 12ns and T1 = 32ns, typical of Advantage2 research.
+        phi_s: Bloch sphere rotation (azimuthal angle) for the source.
+        phi_d: Bloch sphere rotation (azimuthal angle) for the detector.
     Returns:
         A model signal
     """
-    return sign_Jts_fbs * (
-        (delays < 0)
-        + (delays > 0) * np.exp(-delays / T2) * np.cos(2 * np.pi * A * delays)
-    )
+    return np.exp(-delays / T2) * np.cos(2 * np.pi * A * delays + phi_s - phi_d)
 
 
-def dy_dt0(
+def make_yE(
+    delays: np.ndarray,
+    *,
+    T1: float = 0.032,
+    theta_s: float = np.pi / 2,
+) -> np.ndarray:
+    """Make a noise-free model signal for energy basis preparation and detection.
+
+    Eq 6. from arXiv 2603.15534 at theta_d = 0, with theta_s = pi/2 by default.
+    Note that this model assumes decoupling from the source, and ideally
+    controlled flux biases (in particular note phi_q=0 on the target, and the
+    flux bias on the detector must be small compared to the polarizing signal).
+    The source polarization is assumed to be instantaneously removed.
+
+    y(t) = 1 - exp(-t / T1) * (1 - cos(theta_s))
+
+    Args:
+        delays: Measurement times (microseconds)
+        T1: Exponential envelope time scale (microseconds). Defaulted to a value
+            typical of Advantage2 research systems.
+        theta_s: Bloch sphere rotation (polar angle) for the source (default: pi/2).
+    Returns:
+        A model signal
+    """
+    return 1 - np.exp(-delays / T1) * (1 - np.cos(theta_s))
+
+
+def make_y(
+    delays,
+    A: float,
+    *,
+    T1: float = 0.032,
+    T2: float = 0.0101,
+    sign_Jts_fbs: int = -1,
+    theta_d: float = np.pi / 2,
+    theta_s: float = np.pi / 2,
+    phi_d: float = 0.0,
+    phi_s: float = 0.0,
+    t0: float = 0.0,
+):
+    """Make a noise-free model signal for arbitrary basis preparation and detection.
+
+    The source polarization is fixed to sign(J_ts * fb_s):
+    y(t) = sign(J) y(theta_d, theta_s, phi_d, phi_s) for t > t0, and
+           sign(J) for t < t0   # Constrained by source polarization
+
+    where y(theta_d, theta_s, phi_d, phi_s) matches Eq. 6 of arXiv:2603.15534.
+
+    Args:
+        delays: Measurement times (microseconds)
+        A: frequency
+        T1: assumed coherence time (microseconds)
+        T2: assumed coherence time (microseconds)
+        sign_Jts_fbs: polarization sign on the target
+        theta_d: detection basis angle
+        theta_s: source basis angle
+        phi_d: detection phase
+        phi_s: source phase
+        t0: Source decoupling time (default: 0.0)
+    Returns:
+        A model signal assuming ideal detection and instantaneous source decoupling.
+
+    """
+    rd = delays - t0
+    return sign_Jts_fbs * ((rd <= 0) + (rd > 0) * (
+        np.cos(theta_d) * make_yE(rd, T1=T1, theta_s=theta_s)
+        + np.sin(theta_d)
+        * np.sin(theta_s)
+        * make_yC(rd, A=A, T2=T2, phi_d=phi_d, phi_s=phi_s)
+    ))
+
+
+def dyC_dt0(
     delays: np.ndarray, A: float, T2: float = 0.0101, sign_Jts_fbs: int = -1
 ) -> np.ndarray:
     """Calculate derivative of signal model with respect to time delay.
@@ -179,10 +261,12 @@ def dy_dt0(
     return sign_Jts_fbs * (dy0_dt0 * y1 + y0 * dy1_dt0)
 
 
-def dy_dA(
+def dyC_dA(
     delays: np.ndarray, A: float, T2: float = 0.0101, sign_Jts_fbs: int = -1
 ) -> np.ndarray:
     """Calculate derivative of signal model with respect to frequency.
+
+    EFFECTIVELY OBSOLETE FUNCTION
 
     Computes the derivative of the ``make_y`` signal
     ``sign_Jts_fbs * exp(-t/T2) * cos(2*pi*A*t)`` (for ``t > 0``) with respect
@@ -206,21 +290,37 @@ def dy_dA(
 def artificial_data(
     delays: np.ndarray,
     A: float,
+    *,
+    T1: float = 0.032,
     T2: float = 0.0101,
-    num_independent_samples: int = float("Inf"),
+    sign_Jts_fbs: int = -1,
+    theta_d: float = np.pi / 2,
+    theta_s: float = np.pi / 2,
+    phi_d: float = 0.0,
+    phi_s: float = 0.0,
+    t0: float = 0.0,
+    num_independent_samples: float = float("Inf"),
     prng: np.random.Generator | int | None = None,
 ) -> np.ndarray:
     """Create an artificial data set
 
-    y(t) = np.exp(-delays / T2) * np.cos(2* np.pi * A * delays)
+    y(t) = ideal signal produced by ``make_y``
     with variance of (1 - y(t)^2) in the measured state. Given independent
     and identically distributed samples we can model noise as normally
-    distributed.
+    distributed. The signal is clipped so that the value is always physical
+    within the range [-1, 1] (only impacts small num_independent_samples).
 
     Args:
         delays: Time of measurement (microseconds).
         A: Frequency (GHz).
+        T1: Assumed coherence time (microseconds).
         T2: Exponential envelope time scale (microseconds).
+        sign_Jts_fbs: Polarization sign on the target (default: -1).
+        theta_d: Detection basis angle (default: pi/2).
+        theta_s: Source basis angle (default: pi/2).
+        phi_d: Detection phase (default: 0.0).
+        phi_s: Source phase (default: 0.0).
+        t0: Reference time for the start of the measurement (default: 0.0).
         num_independent_samples: Number of samples to model.
         prng: Pseudo random number generator or seed.
 
@@ -228,12 +328,26 @@ def artificial_data(
         A model signal with sampling noise.
     """
 
-    y = make_y(delays, A, T2)
+    y = make_y(
+        delays,
+        A,
+        T1=T1,
+        T2=T2,
+        sign_Jts_fbs=sign_Jts_fbs,
+        theta_d=theta_d,
+        theta_s=theta_s,
+        phi_d=phi_d,
+        phi_s=phi_s,
+        t0=t0,
+    )
 
     if num_independent_samples != float("Inf"):
         prng = np.random.default_rng(prng)
-        return y + np.sqrt((1 - y**2) / num_independent_samples) * prng.normal(
-            size=len(y)
+        return np.clip(
+            y
+            + np.sqrt((1 - y**2) / num_independent_samples) * prng.normal(size=len(y)),
+            a_min=-1,
+            a_max=1,
         )
     else:
         return y
@@ -482,8 +596,8 @@ def _get_experiment_id(
     vars_args.pop(
         "save_figures", None
     )  # save_figures is not relevant to the experiment data, so we exclude it from the hash
-    if vars_args.get('solver_name', None) == SOLVER_FILTER:
-        vars_args['solver_name'] = 'DefaultSolver'
+    if vars_args.get("solver_name", None) == SOLVER_FILTER:
+        vars_args["solver_name"] = "DefaultSolver"
     args_string = json.dumps(vars_args, sort_keys=True)
     identifier = hashlib.sha256(args_string.encode("utf-8")).hexdigest()[:num_char]
     if verbose:
@@ -766,7 +880,9 @@ def main(
         qpu_fn = f"cache/qpu_{cache_str}.pkl"
     try:
         qpu = DWaveSampler(solver=solver)
-        print(f"Solver connected to (check matches schedule file): {qpu.solver.identity}")
+        print(
+            f"Solver connected to (check matches schedule file): {qpu.solver.identity}"
+        )
         exp_feature_info = get_properties(qpu)
         if cache_str:
             with open(qpu_fn, "wb") as f:
@@ -814,12 +930,12 @@ def main(
         x_polarizing_schedule,
         x_anneal_schedules,
     )
-    #x_schedule_delays = make_tds_x_schedule_delays(
+    # x_schedule_delays = make_tds_x_schedule_delays(
     #    x_anneal_schedules=x_anneal_schedules,
     #    quenched_lines=set(detector_lines) | set(source_lines),
     #    target_c=target_c,
     #    decimal_places=6,
-    #)  # Quench rates implied by linear PWL are unreliable, especially with overshoot.
+    # )  # Quench rates implied by linear PWL are unreliable, especially with overshoot.
     x_schedule_delays = [0.0] * num_lines
     dt = 1 / target_A / 1000 / 4  # Appropriate scale for frequency resolution.
     delays = np.linspace(
@@ -1041,11 +1157,17 @@ def main(
                 sampling_params["x_schedule_delays"] = x_schedule_delays
             else:
                 raise ValueError("Unknown method")
-            polarization_candidates = [(i, flux_biases[i]) for i in range(len(flux_biases)) if abs(flux_biases[i]) > 1e-4]
+            polarization_candidates = [
+                (i, flux_biases[i])
+                for i in range(len(flux_biases))
+                if abs(flux_biases[i]) > 1e-4
+            ]
             if polarization_candidates:
-                print("WARNING: Anomalously large flux biases could indicate "
-                          "a calibration issue, check magnetization plots "
-                      "for evidence of polarization and report bad qubits.")
+                print(
+                    "WARNING: Anomalously large flux biases could indicate "
+                    "a calibration issue, check magnetization plots "
+                    "for evidence of polarization and report bad qubits."
+                )
                 print(polarization_candidates)
             if cache_str:
                 os.makedirs(os.path.dirname(fn_cache), exist_ok=True)
@@ -1102,7 +1224,7 @@ def main(
     )
 
     line_exemplars = {line_assignments[emb[0][0]]: idx for idx, emb in enumerate(embs)}
-    
+
     plt.figure("Timeseries")
     plt.title("Time series for several qubits using distinct target lines")
     _plot_time_series(
@@ -1242,7 +1364,7 @@ def main(
             label="Schedule prediction",
         )
         plt.legend()
-        
+
         plt.figure("AnnealOffsets")
         anneal_offsets0 = anneal_offsets
         anneal_offsets = _calc_anneal_offsets(
