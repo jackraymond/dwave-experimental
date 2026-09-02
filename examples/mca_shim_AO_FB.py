@@ -46,7 +46,7 @@ from dwave.experimental.multicolor_anneal import (
     get_properties,
     make_tds_graph,
     make_tds_x_schedules,
-#   make_tds_x_schedule_delays,
+    #   make_tds_x_schedule_delays,
     SOLVER_FILTER,
 )
 from dwave.experimental.shimming import shim_flux_biases, shim_tds_flux_biases
@@ -138,6 +138,7 @@ def make_yC(
     T2: float = 0.0101,
     phi_s: float = 0.0,
     phi_d: float = 0.0,
+    sign_Jts_fbs: int = 1,
 ) -> np.ndarray:
     """Make a noise-free model signal for computational basis preparation and detection.
 
@@ -156,10 +157,15 @@ def make_yC(
             from T_phi = 12ns and T1 = 32ns, typical of Advantage2 research.
         phi_s: Bloch sphere rotation (azimuthal angle) for the source.
         phi_d: Bloch sphere rotation (azimuthal angle) for the detector.
+        sign_Jts_fbs: Sign of the product of J_ts and fb_s (default: 1).
     Returns:
         A model signal
     """
-    return np.exp(-delays / T2) * np.cos(2 * np.pi * A * delays + phi_s - phi_d)
+    return (
+        sign_Jts_fbs
+        * np.exp(-delays / T2)
+        * np.cos(2 * np.pi * A * delays + phi_s - phi_d)
+    )
 
 
 def make_yE(
@@ -167,6 +173,7 @@ def make_yE(
     *,
     T1: float = 0.032,
     theta_s: float = np.pi / 2,
+    sign_fbd: int = 1,
 ) -> np.ndarray:
     """Make a noise-free model signal for energy basis preparation and detection.
 
@@ -186,7 +193,7 @@ def make_yE(
     Returns:
         A model signal
     """
-    return 1 - np.exp(-delays / T1) * (1 - np.cos(theta_s))
+    return sign_fbd * (1 - np.exp(-delays / T1) * (1 - np.cos(theta_s)))
 
 
 def make_y(
@@ -196,6 +203,7 @@ def make_y(
     T1: float = 0.032,
     T2: float = 0.0101,
     sign_Jts_fbs: int = -1,
+    sign_fbd: int = 1,
     theta_d: float = np.pi / 2,
     theta_s: float = np.pi / 2,
     phi_d: float = 0.0,
@@ -210,12 +218,16 @@ def make_y(
 
     where y(theta_d, theta_s, phi_d, phi_s) matches Eq. 6 of arXiv:2603.15534.
 
+    Assume that |Ip(s_tar) J_td| is large compared to fb_d. So that until the source
+    is decoupled, the influence of fb_d can be neglected.
+
     Args:
         delays: Measurement times (microseconds)
         A: frequency
         T1: assumed coherence time (microseconds)
         T2: assumed coherence time (microseconds)
-        sign_Jts_fbs: polarization sign on the target
+        sign_Jts_fbs: polarization of target when subject to strong source coupling.
+        sign_fbd: polarization of decoupled detector (default: 1)
         theta_d: detection basis angle
         theta_s: source basis angle
         phi_d: detection phase
@@ -226,16 +238,16 @@ def make_y(
 
     """
     rd = delays - t0
-    return sign_Jts_fbs * ((rd <= 0) + (rd > 0) * (
-        np.cos(theta_d) * make_yE(rd, T1=T1, theta_s=theta_s)
+    return sign_Jts_fbs * (rd <= 0) + (rd > 0) * (
+        np.cos(theta_d) * make_yE(rd, T1=T1, theta_s=theta_s, sign_fbd=sign_fbd)
         + np.sin(theta_d)
         * np.sin(theta_s)
-        * make_yC(rd, A=A, T2=T2, phi_d=phi_d, phi_s=phi_s)
-    ))
+        * make_yC(rd, A=A, T2=T2, sign_Jts_fbs=sign_Jts_fbs, phi_d=phi_d, phi_s=phi_s)
+    )
 
 
 def dyC_dt0(
-    delays: np.ndarray, A: float, T2: float = 0.0101, sign_Jts_fbs: int = -1
+    delays: np.ndarray, A: float, T2: float = 0.0101, sign_Jts_fbs: int = 1
 ) -> np.ndarray:
     """Calculate derivative of signal model with respect to time delay.
 
@@ -262,7 +274,7 @@ def dyC_dt0(
 
 
 def dyC_dA(
-    delays: np.ndarray, A: float, T2: float = 0.0101, sign_Jts_fbs: int = -1
+    delays: np.ndarray, A: float, T2: float = 0.0101, sign_Jts_fbs: int = 1
 ) -> np.ndarray:
     """Calculate derivative of signal model with respect to frequency.
 
@@ -293,7 +305,7 @@ def artificial_data(
     *,
     T1: float = 0.032,
     T2: float = 0.0101,
-    sign_Jts_fbs: int = -1,
+    sign_Jts_fbs: int = 1,
     theta_d: float = np.pi / 2,
     theta_s: float = np.pi / 2,
     phi_d: float = 0.0,
@@ -392,7 +404,7 @@ def run_parallel_experiment(
     )
     baseline_delays = x_schedule_delays.copy()
     mean_Z_detector = []
-    for delay in tqdm(delays):
+    for delay in tqdm(delays, disable=len(delays) == 1):
         for line in detector_lines:
             x_schedule_delays[line] = baseline_delays[line] + delay
         # Return as a list of samplesets, instead of aggregated:
@@ -664,6 +676,97 @@ def _plot_time_series(
         plt.show(block=plt_show_block)
 
 
+def estimate_decoupling_timescale(
+    sampler,
+    bqm,
+    sampling_params,
+    detector_lines,
+    detected_vars=(("detector", 0),),
+    t_guess=0.0,
+    t_min=None,
+    t_max=None,
+    target_A: float = 2000,
+    T2: float = 0.0101,
+    threshold_cycle_av=0.9,
+    verbose: bool = True,
+):
+    """Estimate bulk decoupling delay based on target_A and T2.
+
+    Uncertainty in the computational basis magnetization under pi/2 pulse (polarized)
+    preparation is small compared to the to the maximum expected amplitude following
+    decoupling for a duration t >= 1/target_A (time for one cycle) in typical experiments
+    at baseline calibration, max(|y(t >= 1/omega)|) < exp(-1/(A*T2)). We can therefore
+    perform a bisection search to determine a crude source-decoupling timescale.
+
+    Args:
+        target_A: Target amplitude for the decoupling sequence (MHz)
+        T2: Decoherence time (milliseconds)
+        threshold_cycle_av: Threshold characterizing the decoupled regime (default: 0.9).
+            The half-cycle average (t and t+1/(2*target_A)) magnetization is only larger than
+            the threshold, in absolute value, in the source-coupled regime.
+
+    Returns:
+        A tuple containing:
+        - The final t_guess value representing the estimated decoupling timescale.
+        - A list of (t_guess, mag) pairs representing the decoupling timescale search data.
+    """
+    threshold = np.exp(-1)  # Separates onset from no onset.
+    if verbose:
+        print("Estimate decoupling timescale to O(T1), most likely two programmings")
+    # Estimate upper and lower bound to precision T1:
+    data = []
+    while t_min is None or t_max is None:
+        mag = run_parallel_experiment(
+            sampler=sampler,
+            bqm=bqm,
+            sampling_params=sampling_params,
+            delays=[t_guess],
+            detector_lines=detector_lines,
+            detected_vars=detected_vars,
+        )
+        data.append((t_guess, mag[0, :]))
+        if abs(np.median(mag)) < threshold:
+            t_max = t_guess
+            t_guess -= T2
+        else:
+            t_min = t_guess
+            t_guess += T2
+    # Bisection search to precision 1/target_A
+    if verbose:
+        print(
+            "Estimate decoupling timescale to O(1/omega), most likely several programmings"
+        )
+    while t_max - t_min > 1 / target_A:
+        t_guess = (t_min + t_max) / 2
+        mag = run_parallel_experiment(
+            sampler=sampler,
+            bqm=bqm,
+            sampling_params=sampling_params,
+            delays=[t_guess],
+            detector_lines=detector_lines,
+            detected_vars=detected_vars,
+        )
+        data.append((t_guess, mag[0, :]))
+        if abs(np.median(mag)) < threshold_cycle_av:
+            t_max = t_guess
+        else:
+            # Check pinned at minus 1/2 cycle
+            mag = run_parallel_experiment(
+                sampler=sampler,
+                bqm=bqm,
+                sampling_params=sampling_params,
+                delays=[t_guess - 1 / target_A / 2.0],
+                detector_lines=detector_lines,
+                detected_vars=detected_vars,
+            )
+            data.append((t_guess - 1 / target_A / 2.0, mag[0, :]))
+            if abs(np.median(mag)) < threshold_cycle_av:
+                t_max = t_guess - 1 / target_A / 2.0
+            else:
+                t_min = t_guess
+    return t_guess, data
+
+
 def main(
     cache_str: str | None = None,
     solver: dict | str | None = None,
@@ -674,9 +777,10 @@ def main(
     target_c: float | None = None,
     target_A: float | None = 2.0,
     apply_flux_bias_shim: Literal["None", "Detector", "TDS"] = "Detector",
+    source_decoupling_detection: bool = True,
     verify_anneal_offsets: bool = True,
-    delay_min: float = 0.005,
-    delay_max: float = 0.015,
+    delay_min: float | None = None,
+    delay_max: float | None = None,
     delay_min_fit: float | None = None,
     delay_max_fit: float | None = None,
     schedule_fn: str = "09-1323A-D_Advantage2_system4_annealing_schedule.xlsx",
@@ -685,6 +789,7 @@ def main(
     num_reads: int = 500,
     use_common_bounds: bool = True,
     save_figures: bool = False,
+    T2: float = 0.0101,
 ) -> None:
     """Demonstrate T-D-S variability and mitigation strategies.
 
@@ -745,10 +850,10 @@ def main(
             Anneal_offsets are modified so that the peak power-spectral density is peaked at a common
             value for all qubits. This peak value characterizes the frequency of the target
             qubit in simple, well-calibrated models.
-        delay_min: The delay on the detector line for which data is collected.
-        delay_max: The maximum delay on the detector line for which data is collected. Between
-            delay_min and delay_max the spacing in time reflects the target frequency that we
-            are seeking to resolve for anneal_offset refinement.
+        delay_min: The delay on the detector line for which data is collected. If None
+            determined by estimation of source decoupling.
+        delay_max: The maximum delay on the detector line for which data is collected. By
+            default delay_min + 2 * T2
         delay_min_fit:
             A lower bound on the timeseries window used for inference of the target power spectral density.
             A value that is too small can bias the estimator by introduction of effects related
@@ -789,16 +894,6 @@ def main(
         "flux_biases on detectors, and target qubit frequency "
         "desynchronization, from small amounts of data. "
     )
-    if delay_max_fit is None:
-        delay_max_fit = delay_max  # Can be automated for SNR in principle.
-    elif delay_max_fit > delay_max:
-        raise ValueError("The fit window is incompatible with the data window")
-    if delay_min_fit is None:
-        delay_min_fit = delay_min  # Can be automated for SNR in principle.
-    elif delay_min_fit < delay_min:
-        raise ValueError("The fit window is incompatible with the data window")
-    if delay_min_fit > delay_max_fit:
-        raise ValueError("The fit window is empty")
     # Schedule based approximations, target_A and dA/dc are approximated.
     print(f"Schedule file used: {schedule_fn}")
     qpu_anneal_schedule = pd.read_excel(
@@ -937,15 +1032,24 @@ def main(
     #    decimal_places=6,
     # )  # Quench rates implied by linear PWL are unreliable, especially with overshoot.
     x_schedule_delays = [0.0] * num_lines
-    dt = 1 / target_A / 1000 / 4  # Appropriate scale for frequency resolution.
+
+    dt0 = 1 / target_A / 1000 / 4  # Appropriate scale for frequency resolution.
+    delay_max_art = 2 * T2
+    delay_min_art = 0.0
     delays = np.linspace(
-        delay_min, delay_max, round((delay_max - delay_min) / dt) + 1, endpoint=True
+        delay_min_art,
+        delay_max_art,
+        round((delay_max_art - delay_min_art) / dt0) + 1,
+        endpoint=True,
     )
-    dt = delays[1] - delays[0]  # Rounding
+    dt = dt0  # Rounding
 
     dt_hd = 0.00001  # 0.01 nanoseconds
     high_density_delays = np.linspace(
-        delay_min, delay_max, round((delay_max - delay_min) / dt_hd), endpoint=False
+        delay_min_art,
+        delay_max_art,
+        round((delay_max_art - delay_min_art) / dt_hd),
+        endpoint=False,
     )
     dt_hd = high_density_delays[1] - high_density_delays[0]  # Rounding
     stage_idx += 1
@@ -953,8 +1057,8 @@ def main(
     print(f"Stage {stage_idx}: Demonstrate simple model data.")
     print("Model: y(t) = cos(2*pi*(A+dA)*(t+dt)) * exp(-gamma*(t+dt))")
     print("Includes sampling error, detector vs source delays, and perturbations.")
-    delay_perturbation = 0.002 * np.random.random()
-    for idx, A in enumerate([target_Aminus, target_A, target_Aplus]):
+    for A in [target_Aminus, target_A, target_Aplus]:
+        delay_perturbation = 1 / (A * 1000) * np.random.random()  # up to 1 cycle.
         label = f"A={A:.3g}"
         signal = artificial_data(
             delays + delay_perturbation,
@@ -1020,6 +1124,41 @@ def main(
         plt.xlim([0, frequencies[-1]])
         plt.legend()
 
+        # Artificial pi/2 pulse preparation and energy basis measurement
+        signal = artificial_data(
+            delays,
+            A * 1000,
+            num_independent_samples=num_reads,
+            theta_d=0.0,
+            t0=delay_perturbation,
+        )
+        high_density_signal = artificial_data(
+            high_density_delays + delay_perturbation,
+            A * 1000,
+            num_independent_samples=float("Inf"),  # No noise
+            theta_d=0.0,
+        )
+        fig = plt.figure("Energy basis measurement")
+        plt.title("y=1 - exp(-t/T2) + sampling error")
+        plt.plot(
+            (delays + delay_perturbation) * 1000,
+            signal,
+            label=label,
+            marker=".",
+            linestyle=None,
+            color=next_color,
+        )
+        plt.plot(
+            (high_density_delays + delay_perturbation) * 1000,
+            high_density_signal,
+            linestyle="dotted",
+            color=next_color,
+        )
+        plt.xlabel("Time, nanoseconds")
+        plt.ylabel(r"Magnetization, $\langle y \rangle_{detector}$")
+        plt.legend()
+        plt.tight_layout()
+
     if save_figures:
         _save_open_figures("figures/", cache_str)
     print("Close figures to proceed to next (experimental) stages.")
@@ -1081,11 +1220,9 @@ def main(
         embs_by_line[line_assignments[q]].append(emb)
 
     embs = [emb for i in target_lines for emb in embs_by_line[i]]
+    n_embs = len(embs)
 
     sampler = ParallelEmbeddingComposite(qpu, embeddings=embs)
-
-    dt = 1 / target_A / 1000 / 4  # Appropriate scale for frequency resolution.
-    delays = np.linspace(delay_min, delay_max, round((delay_max - delay_min) / dt) + 1)
 
     bqm = dimod.BinaryQuadraticModel("SPIN").from_ising(
         {n: 0 for n in S.nodes()}, {e: -1 for e in S.edges()}
@@ -1184,9 +1321,61 @@ def main(
         print("Close figures to proceed to next (experimental) stages.")
         plt.show()
         sampling_params["x_polarizing_schedule"] = x_polarizing_schedule
+
+    if source_decoupling_detection:
+        stage_idx += 1
+        print()
+        print(f"Stage {stage_idx}: Detect delay for source decoupling.")
+        print(
+            "Whilst the source is coupled a polarized signal is detected."
+            "Larmour precision proceeds from the point where decoupling occurs, "
+            "determine this processor and PWL anneal_schedules specific value."
+        )
+        print(
+            "Quality of outcome is contingent on decent calibration of flux_biases (theta_s~pi/2, theta_d~pi/2, target near-enough degeneracy at equilibrium)"
+        )
+        t_decoupled, t_mags = estimate_decoupling_timescale(
+            sampler=sampler,
+            bqm=bqm,
+            sampling_params=sampling_params,
+            detector_lines=detector_lines,
+            target_A=target_A * 1000,
+        )
+        plt.figure("source_decoupling")
+        x = [t for t, _ in t_mags]
+        y = [mag for _, mag in t_mags]
+        plt.plot(
+            x,
+            y,
+            linestyle="None",
+            marker=".",
+        )
+        plt.xlabel("Time")
+        plt.ylabel("Magnitude")
+        plt.title("Source Decoupling Detection")
+        plt.axvline(
+            t_decoupled, color="r", linestyle="--", label="Estimated Decoupling Time"
+        )
+        plt.legend()
+        if save_figures:
+            _save_open_figures("figures/", cache_str)
+        print("Close figures to proceed to next (experimental) stages.")
+    if delay_min is None:
+        delay_min = t_decoupled + 1 / (target_A * 1000)  # Ignore first cycle.
+    if delay_min_fit is None:
+        delay_min_fit = delay_min
+    if delay_max is None:
+        delay_max = delay_min + 2 * T2
+    if delay_max_fit is None:
+        delay_max_fit = delay_max  # Can be automated for SNR in principle.
+    if not (delay_min <= delay_min_fit < delay_max_fit <= delay_max):
+        raise ValueError("The fit window is incompatible with the data window")
+
+    delays = np.linspace(delay_min, delay_max, round((delay_max - delay_min) / dt0) + 1)
+    dt = delays[1] - delays[0]
+
     stage_idx += 1
     print()
-    n_embs = len(embs)
     print(f"Stage {stage_idx}: Collect data for {n_embs} parallel embeddings.")
     print(
         "Apply delays on detector line vs source, sampling at twice the Nyquist frequency."
@@ -1476,14 +1665,14 @@ if __name__ == "__main__":
         dest="delay_min",
         type=float,
         help="Initial delay time (us) for data collection",
-        default=0.0,
+        default=None,
     )
     parser.add_argument(
         "--delay-max",
         dest="delay_max",
         type=float,
         help="Final delay time (us) for data collection",
-        default=0.015,  # Oscillations not completely decayed
+        default=None,  # Oscillations not completely decayed
     )
     parser.add_argument(
         "--delay-min-fit",
@@ -1500,6 +1689,13 @@ if __name__ == "__main__":
         help="Final delay (us) for frequency estimation (default: matches delay_max). "
         "Choose largest delay with low noise.",
         default=None,
+    )
+    parser.add_argument(
+        "--no-source-decoupling-detection",
+        dest="source_decoupling_detection",
+        action="store_false",
+        default=True,
+        help="Disable detection of the delay required for source decoupling.",
     )
     parser.add_argument(
         "--skip-anneal-offset-verification",
@@ -1560,6 +1756,7 @@ if __name__ == "__main__":
         delay_max=args.delay_max,
         delay_min_fit=args.delay_min_fit,
         delay_max_fit=args.delay_max_fit,
+        source_decoupling_detection=args.source_decoupling_detection,
         verify_anneal_offsets=not args.skip_anneal_offset_verification,
         apply_flux_bias_shim=args.apply_flux_bias_shim,
         use_01_c_range=args.use_01_c_range,
