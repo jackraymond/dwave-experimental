@@ -581,8 +581,8 @@ def imshow_data(
     }
     yticks_dict.update(
         {
-            0: f'{1000 * delays[0]:.3g}',
-            mean_Z_detector.shape[0] - 1: f'{1000 * delays[-1]:.3g}',
+            0: f"{1000 * delays[0]:.3g}",
+            mean_Z_detector.shape[0] - 1: f"{1000 * delays[-1]:.3g}",
         }
     )
     plt.yticks(
@@ -628,7 +628,10 @@ def _get_experiment_id(
     if verbose:
         print("Demo parameters:")
         print(vars(args))
-        print("Demo identifier (labels cached data and saved figures, employ --use-cache for data reuse):", identifier)
+        print(
+            "Demo identifier (labels cached data and saved figures, employ --use-cache for data reuse):",
+            identifier,
+        )
     return identifier
 
 
@@ -720,7 +723,7 @@ def estimate_decoupling_timescale(
     A bound on the decoupling timescale is first established to O(T2).
     The interval is then searched by bisection to obtain a value that characterizes
     decoupling in the bulk (mean) to accurace O(1/target_A), variation between lines
-    and qubits on a given line can be of a comparable scale. Series for separated 
+    and qubits on a given line can be of a comparable scale. Series for separated
     lines or qubits can be evaluated by similar principles, and deviations reduced
     by application of anneal offsets on detectors and sources.
 
@@ -731,7 +734,7 @@ def estimate_decoupling_timescale(
             The half-cycle average (t and t+1/(2*target_A)) magnetization is only larger than
             the threshold, in absolute value, in the source-coupled regime.
         preparation_orientation: Orientation of the preparation pulse (default: 1).
-        verbose: Whether to print progress information (default: True). 
+        verbose: Whether to print progress information (default: True).
 
     Returns:
         A tuple containing:
@@ -752,7 +755,7 @@ def estimate_decoupling_timescale(
             detected_vars=detected_vars,
         )
         data.append((t_guess, mag[0, :]))
-        if np.median(mag)*preparation_orientation < threshold_cycle_av:
+        if np.median(mag) * preparation_orientation < threshold_cycle_av:
             t_max = t_guess
             t_guess -= T2
         else:
@@ -766,7 +769,10 @@ def estimate_decoupling_timescale(
                 detected_vars=detected_vars,
             )
             data.append((t_guess - 1 / target_A / 2.0, mag[0, :]))
-            if preparation_orientation/2*(np.median(mag+mag_half)) < threshold_cycle_av:
+            if (
+                preparation_orientation / 2 * (np.median(mag + mag_half))
+                < threshold_cycle_av
+            ):
                 t_max = t_guess - 1 / target_A / 2.0
                 t_guess -= T2
             else:
@@ -787,7 +793,7 @@ def estimate_decoupling_timescale(
             detected_vars=detected_vars,
         )
         data.append((t_guess, mag[0, :]))
-        if np.median(mag)*preparation_orientation < threshold_cycle_av:
+        if np.median(mag) * preparation_orientation < threshold_cycle_av:
             t_max = t_guess
         else:
             mag_half = mag
@@ -800,7 +806,10 @@ def estimate_decoupling_timescale(
                 detected_vars=detected_vars,
             )
             data.append((t_guess - 1 / target_A / 2.0, mag[0, :]))
-            if preparation_orientation/2*np.median(mag + mag_half) < threshold_cycle_av:
+            if (
+                preparation_orientation / 2 * np.median(mag + mag_half)
+                < threshold_cycle_av
+            ):
                 t_max = t_guess - 1 / target_A / 2.0
             else:
                 t_min = t_guess
@@ -816,6 +825,7 @@ def main(
     max_num_embeddings: int | None = None,
     target_c: float | None = None,
     target_A: float | None = None,
+    dAdc: float | None = None,
     apply_flux_bias_shim: Literal["None", "Detector", "TDS"] = "Detector",
     source_decoupling_detection: bool = True,
     verify_anneal_offsets: bool = True,
@@ -946,89 +956,103 @@ def main(
     )
 
     # Schedule based approximations, target_A and dA/dc are approximated.
-    print(f"Schedule file used: {schedule_fn} ")
-    print(
-        f"For shimming of anneal offsets dA/dc must be a reasonable match in the vicinity of target_A={target_A:.3g}GHz."
-    )
-    qpu_anneal_schedule = pd.read_excel(
-        schedule_fn, sheet_name="Fast-Annealing Schedule"
-    )
-    
-    plt.figure("Schedule")
-    plt.title("Annealing Schedule")
-    delta_vs_s = qpu_anneal_schedule[::-1]
-    plt.plot(delta_vs_s["s"], delta_vs_s["A(s) (GHz)"], label="A(s)")
-    plt.plot(delta_vs_s["s"], delta_vs_s["B(s) (GHz)"], label="B(s)")
-    if target_c is None:
-        if target_A is None:
-            target_c = np.interp(
-                0.0, -delta_vs_s["B(s) (GHz)"]+delta_vs_s["A(s) (GHz)"], delta_vs_s["s"]
-            )  # Expected normalized control bias at which to hold the qubits
-        else:
-            target_c = np.interp(
-                target_A, delta_vs_s["A(s) (GHz)"], delta_vs_s["s"]
-            )  # Expected normalized control bias at which to hold the qubits
-    elif target_A is not None:
-        raise ValueError('Specification of both target_c and target_A is not permitted.')
-    if target_A is None:
-        target_A = np.interp(
-            1 - target_c, 1 - delta_vs_s["s"], delta_vs_s["A(s) (GHz)"]
-        )  # Expected frequency of detector magnetization oscillations
-    target_B = np.interp(1 - target_c, 1 - delta_vs_s["s"], delta_vs_s["B(s) (GHz)"])
-    nyquist_frequency = target_A * 1000 * 2  # Nyquist frequency in MHz, resolve up to 2*target_A.
+    stage_idx = -1
 
-    stage_idx = 0
-    print()
-    print(f"Stage {stage_idx}: Plot the annealing schedule.")
+    if schedule_fn is None:
+        if target_A is None or target_c is None or dAdc is None:
+            raise ValueError(
+                "Schedule file is required if target_A, target_c, or dAdc is not specified."
+            )
+    else:
+        stage_idx += 1
+        print()
+        print(
+            f"Stage {stage_idx}: Estimate target_A, target_c and dA/dc. Plot the annealing schedule."
+        )
+        print(f"Schedule file used: {schedule_fn} ")
+        print(
+            f"For shimming of anneal offsets dA/dc must be a reasonable match in the vicinity of target_A."
+        )
+        qpu_anneal_schedule = pd.read_excel(
+            schedule_fn, sheet_name="Fast-Annealing Schedule"
+        )
+
+        plt.figure("Schedule")
+        plt.title("Annealing Schedule")
+        delta_vs_s = qpu_anneal_schedule[::-1]
+        plt.plot(delta_vs_s["s"], delta_vs_s["A(s) (GHz)"], label="A(s)")
+        plt.plot(delta_vs_s["s"], delta_vs_s["B(s) (GHz)"], label="B(s)")
+        if target_c is None:
+            if target_A is None:
+                target_c = np.interp(
+                    0.0,
+                    -delta_vs_s["B(s) (GHz)"] + delta_vs_s["A(s) (GHz)"],
+                    delta_vs_s["s"],
+                )  # Expected normalized control bias at which to hold the qubits
+            else:
+                target_c = np.interp(
+                    target_A, delta_vs_s["A(s) (GHz)"], delta_vs_s["s"]
+                )  # Expected normalized control bias at which to hold the qubits
+        elif target_A is not None:
+            raise ValueError(
+                "Specification of both target_c and target_A is not permitted when also specifying schedule_fn."
+            )
+        if target_A is None:
+            target_A = np.interp(
+                1 - target_c, 1 - delta_vs_s["s"], delta_vs_s["A(s) (GHz)"]
+            )  # Expected frequency of detector magnetization oscillations
+        target_B = np.interp(
+            1 - target_c, 1 - delta_vs_s["s"], delta_vs_s["B(s) (GHz)"]
+        )
+
+        dtarget_c = 0.01
+        target_Aminus = np.interp(
+            1 - (target_c - dtarget_c), 1 - delta_vs_s["s"], delta_vs_s["A(s) (GHz)"]
+        )
+        target_Aplus = np.interp(
+            1 - (target_c + dtarget_c), 1 - delta_vs_s["s"], delta_vs_s["A(s) (GHz)"]
+        )
+        if dAdc is None:
+            dAdc = (target_Aplus - target_Aminus) / (2 * dtarget_c)
+        plt.plot(
+            [target_c, target_c],
+            [0, np.max(delta_vs_s["A(s) (GHz)"])],
+            label=f"c={target_c:.3g}",
+        )
+        plt.plot(
+            [0, target_c - 0.01],
+            [target_Aminus, target_Aminus],
+            linestyle="dotted",
+            color="black",
+        )
+        plt.plot(
+            [target_c - 0.01, target_c - 0.01],
+            [0, target_Aminus],
+            linestyle="dotted",
+            color="black",
+        )
+        plt.plot(
+            [0, target_c + 0.01],
+            [target_Aplus, target_Aplus],
+            linestyle="dotted",
+            color="black",
+        )
+        plt.plot(
+            [target_c + 0.01, target_c + 0.01],
+            [0, target_Aplus],
+            linestyle="dotted",
+            color="black",
+        )
+        plt.xlabel("Normalized control bias, c")
+        plt.ylabel("Energy scale, GHz")
+        plt.ylim([0, 2 * max(target_A, target_B)])
+        plt.xlim([0, 1])
+        plt.legend()
     print(
-        "Schedule expectations: ",
-        f"target_c = {target_c:.3g}" ,
+        f"target_c = {target_c:.3g} ",
         f"A(target_c) = {target_A:.3g} GHz ",
         f"B(target_c) = {target_B:.3g} GHz",
     )
-
-    dtarget_c = 0.01
-    target_Aminus = np.interp(
-        1 - (target_c - dtarget_c), 1 - delta_vs_s["s"], delta_vs_s["A(s) (GHz)"]
-    )
-    target_Aplus = np.interp(
-        1 - (target_c + dtarget_c), 1 - delta_vs_s["s"], delta_vs_s["A(s) (GHz)"]
-    )
-    dAdc = (target_Aplus - target_Aminus) / (2 * dtarget_c)
-    plt.plot(
-        [target_c, target_c],
-        [0, np.max(delta_vs_s["A(s) (GHz)"])],
-        label=f"c={target_c:.3g}",
-    )
-    plt.plot(
-        [0, target_c - 0.01],
-        [target_Aminus, target_Aminus],
-        linestyle="dotted",
-        color="black",
-    )
-    plt.plot(
-        [target_c - 0.01, target_c - 0.01],
-        [0, target_Aminus],
-        linestyle="dotted",
-        color="black",
-    )
-    plt.plot(
-        [0, target_c + 0.01],
-        [target_Aplus, target_Aplus],
-        linestyle="dotted",
-        color="black",
-    )
-    plt.plot(
-        [target_c + 0.01, target_c + 0.01],
-        [0, target_Aplus],
-        linestyle="dotted",
-        color="black",
-    )
-    plt.xlabel("Normalized control bias, c")
-    plt.ylabel("Energy scale, GHz")
-    plt.ylim([0, 2 * max(target_A, target_B)])
-    plt.xlim([0, 1])
-    plt.legend()
 
     if cache_str:
         qpu_fn = f"cache/qpu_{cache_str}.pkl"
@@ -1091,19 +1115,23 @@ def main(
     # )  # Quench rates implied by linear PWL are unreliable, especially with overshoot.
     x_schedule_delays = [0.0] * num_lines
 
-
     stage_idx += 1
     print()
     print(f"Stage {stage_idx}: Simple model data (see arXiv:2603.15534).")
     print("Model: y(t) = cos(2*pi*(A+dA)(t+dt)) exp(-(t+dt)/[T_2+dT])")
-    print("Includes sampling error, detector vs source delays, and perturbed target frequencies.")
+    print(
+        "Includes sampling error, detector vs source delays, and perturbed target frequencies."
+    )
 
+    nyquist_frequency = (
+        target_A * 1000 * 2
+    )  # Nyquist frequency in MHz, resolve up to 2*target_A.
     delay_max_art = T2
     delay_min_art = 0.0
     delays = np.linspace(
         delay_min_art,
         delay_max_art,
-        round((delay_max_art - delay_min_art) *(2*nyquist_frequency)) + 1,
+        round((delay_max_art - delay_min_art) * (2 * nyquist_frequency)) + 1,
         endpoint=True,
     )
     dt = delays[1] - delays[0]  # Rounding
@@ -1116,7 +1144,7 @@ def main(
         endpoint=False,
     )
     dt_hd = high_density_delays[1] - high_density_delays[0]  # Rounding
-    
+
     # theta_s = theta_d = pi/2, other parameters are pertured (should revisit for completeness).
     # note that the random delay, and random phi_s-phi_d deviations are qualitatively
     # captured by a single time delay.
@@ -1171,7 +1199,8 @@ def main(
             / 1000
         )
         psd_hd = (
-            np.abs(np.fft.fft(ideal_high_density_signal)) ** 2 / len(ideal_high_density_signal) ** 2
+            np.abs(np.fft.fft(ideal_high_density_signal)) ** 2
+            / len(ideal_high_density_signal) ** 2
         )
         plt.plot(
             frequencies,
@@ -1397,7 +1426,9 @@ def main(
     if source_decoupling_detection:
         stage_idx += 1
         print()
-        print(f"Stage {stage_idx}: Detect delay for source decoupling (for bulk of {n_embs} parallel embeddings)")
+        print(
+            f"Stage {stage_idx}: Detect delay for source decoupling (for bulk of {n_embs} parallel embeddings)"
+        )
         print(
             "Whilst the source is coupled a polarized signal is detected. "
             "Larmor precession proceeds from the point where decoupling occurs; "
@@ -1443,12 +1474,14 @@ def main(
 
     stage_idx += 1
     print()
-    print(f"Stage {stage_idx}: Estimate anneal offsets required to achieve the target frequency {target_A:.3g}GHz (for all {n_embs} parallel embeddings).")
+    print(
+        f"Stage {stage_idx}: Estimate anneal offsets required to achieve the target frequency {target_A:.3g}GHz (for all {n_embs} parallel embeddings)."
+    )
     print(
         "This method by default collects data at twice the expected Nyquist frequency "
         "in the interval ~[0, T2] following decoupling from the source. "
         "The power-spectral density near the target frequency is well approximated by a Lorentzian. "
-        "The realized target frequency is estimated from the peak, the anneal offset required to achieve the " \
+        "The realized target frequency is estimated from the peak, the anneal offset required to achieve the "
         "target frequency can then be estimated by a linear model using the provided schedule. "
         "Methods of higher accuracy are available, for example by exploiting phase information and "
         "collecting data at higher sampling rates."
@@ -1464,9 +1497,10 @@ def main(
     if not (delay_min <= delay_min_fit < delay_max_fit <= delay_max):
         raise ValueError("The fit window is incompatible with the data window")
 
-    delays = np.linspace(delay_min, delay_max, round((delay_max - delay_min) * nyquist_frequency * 2) + 1)
+    delays = np.linspace(
+        delay_min, delay_max, round((delay_max - delay_min) * nyquist_frequency * 2) + 1
+    )
     dt = delays[1] - delays[0]
-
 
     fn_cache = f"cache/AO_It0_{cache_str}.npy"
     if cache_str and os.path.isfile(fn_cache):
@@ -1561,9 +1595,7 @@ def main(
     if verify_anneal_offsets:
         stage_idx += 1
         print()
-        print(
-            f"Stage {stage_idx}: Rerun experiment applying refined anneal offsets."
-        )
+        print(f"Stage {stage_idx}: Rerun experiment applying refined anneal offsets.")
         fn_cache = f"cache/AO_It1_{cache_str}.npy"
         if cache_str and os.path.isfile(fn_cache):
             mean_Z_detector = np.load(fn_cache)
@@ -1580,7 +1612,7 @@ def main(
             )
             if cache_str:
                 np.save(fn_cache, mean_Z_detector)
-            
+
         psd = np.array(
             [
                 np.abs(np.fft.fft(mean_Z_detector[first:last, i])) ** 2
@@ -1651,12 +1683,8 @@ def main(
                 marker="x",
                 label=label,
             )
-        plt.xlabel(
-            "Estimated anneal-offset correction (baseline)"
-        )
-        plt.ylabel(
-            "Estimated anneal-offset correction (after refinement)"
-        )
+        plt.xlabel("Estimated anneal-offset correction (baseline)")
+        plt.ylabel("Estimated anneal-offset correction (after refinement)")
         plt.grid(True)
         plt.legend()
 
@@ -1724,7 +1752,7 @@ if __name__ == "__main__":
         dest="target_A",
         type=float,
         help="Expected qubit frequency (GHz). "
-             "(default A(target_c) such that A(target_c)=B(target_c), which is approximately 2 GHz)",
+        "(default A(target_c) such that A(target_c)=B(target_c), which is approximately 2 GHz)",
         default=None,
     )
     parser.add_argument(
@@ -1739,7 +1767,7 @@ if __name__ == "__main__":
         dest="Jts",
         type=float,
         help="Coupling strength between target and source qubits. "
-            "Extended range is used by default (to maximize effective quench rate).",
+        "Extended range is used by default (to maximize effective quench rate).",
         default=-2.0,
     )
     parser.add_argument(
@@ -1747,7 +1775,7 @@ if __name__ == "__main__":
         dest="Jtd",
         type=float,
         help="Coupling strength between target and detector qubits. "
-            "Extended range is used by default (to maximize effective quench rate).",
+        "Extended range is used by default (to maximize effective quench rate).",
         default=-2.0,
     )
     parser.add_argument(
@@ -1781,7 +1809,7 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="Enable common c-bounds alignment across annealing lines. "
-            "This is necessary for use of the TDS flux shimming method.",
+        "This is necessary for use of the TDS flux shimming method.",
     )
     parser.add_argument(
         "--disable-save-figures",
