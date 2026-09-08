@@ -12,14 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-An example to show coarse-grained calibration refinement of flux_biases and anneal_offsets for multicolor annealing.
+An example to show coarse-grained calibration refinement for multi-color annealing.
 
-This example builds many parallel target-detector-source embeddings, collects
-detector magnetization time series, estimates per-embedding frequency spread,
-and demonstrates two mitigation strategies:
+Calibration can be refined relative to the baseline since certain static or low
+frequency control errors are a function of the specific waveforms and programmed
+Hamiltonian.
+flux_biases, x_anneal_delays and anneal_offsets are refined sequentially by simple iterative methods
+that typically succeed to improve calibration on a plurality of qubits.
 
-1. detector-only or target-detector flux-bias shimming
-2. per-embedding anneal-offset refinement
+This example builds many parallel target-detector-source (T-D-S) embeddings that
+are refined in parallel.
+Optionally, the embeddings can be made consistent with embedding of a loop,
+in which case the final plot demonstrates an interference pattern arising from
+pi/2-pulse initialization (up to limitations of decoherence and control error).
 """
 
 import argparse
@@ -27,7 +32,7 @@ import hashlib
 import json
 import os
 import re
-from typing import Collection, Iterable, Literal
+from typing import Collection, Iterable, Literal, Sequence
 
 import pickle
 import pandas as pd
@@ -360,7 +365,7 @@ def run_parallel_experiment(
     sampling_params: dict,
     delays: np.ndarray | list,
     detector_lines: Iterable[int],
-    detected_vars: Iterable[Variable] = (("detector", 0),),
+    detected_vars: None | Sequence[Variable] = None,
 ) -> np.ndarray:
     """Collect detector magnetization for a set of independent embeddings
 
@@ -387,6 +392,12 @@ def run_parallel_experiment(
     """
     if "x_anneal_schedules" not in sampling_params:
         raise ValueError("No multi-color anneal specified")
+
+    if detected_vars is None:
+        detected_vars = [
+            v for v in bqm.variables if type(v) == tuple and v[0] == "detector"
+        ]
+
     reset_delay = "x_schedule_delays" in sampling_params
     x_schedule_delays = sampling_params.pop(
         "x_schedule_delays", [0.0] * len(sampling_params["x_anneal_schedules"])
@@ -407,7 +418,12 @@ def run_parallel_experiment(
             dimod.keep_variables(sampleset, detected_vars).record.sample
             for sampleset in samplesets
         ]
-        mean_Z_detector.append([np.mean(sample) for sample in detector_samples])
+        if len(detected_vars) == 1:
+            mean_Z_detector.append([np.mean(sample) for sample in detector_samples])
+        else:
+            mean_Z_detector.append(
+                [np.mean(sample, axis=0) for sample in detector_samples]
+            )
     if reset_delay:
         sampling_params["x_schedule_delays"] = baseline_delays
     return np.array(mean_Z_detector)
@@ -421,7 +437,7 @@ def plot_shim(
     max_qubit_labels: int = 10,
     plt_show_block: None | bool = None,
 ) -> None:
-    """Plot the iterative flux_bias_shim process.
+    """Plot the iterative flux-bias calibration refinement process.
 
     Args:
         mag_history: the magnetizations estimated throughout the iterative
@@ -445,7 +461,7 @@ def plot_shim(
         (mag_array.shape[0], mag_array.shape[1] // num_experiments, num_experiments),
     )
 
-    plt.figure("All_Qubit_Magnetization_by_shim_iteration")
+    plt.figure("All_Qubit_Magnetization_by_calibration_refinement_iteration")
     plt.title(r"Magnetization by iteration, $\langle Z\rangle_{detector}$")
     y0 = 0
     for experiment_sign in range(num_experiments):
@@ -461,7 +477,7 @@ def plot_shim(
             )
         y0 = y0 + y / num_experiments
 
-    plt.figure("Bulk_Magnetization_by_shim_iteration")
+    plt.figure("Bulk_Magnetization_by_calibration_refinement_iteration")
     n_qubits = y0.shape[1]
     rms = np.sqrt(np.mean(y0**2, axis=1))
     # Jackknife standard error: recompute RMS leaving out one qubit at a time.
@@ -473,10 +489,10 @@ def plot_shim(
         * np.sum((rms_loo - rms_loo.mean(axis=1, keepdims=True)) ** 2, axis=1)
     )
     plt.errorbar(np.arange(len(rms)), rms, yerr=rms_se, capsize=3)
-    plt.xlabel("Shim iteration")
+    plt.xlabel("Calibration refinement iteration")
     plt.ylabel("Root Mean Square Magnetization")
 
-    plt.figure("All_Qubit_Magnetization_by_shim_iteration")
+    plt.figure("All_Qubit_Magnetization_by_calibration_refinement_iteration")
     if num_experiments > 1:
         plt.plot(
             np.mean(mag_array, axis=2).transpose(),
@@ -484,17 +500,17 @@ def plot_shim(
             label="Experiment average",
         )
         plt.legend()
-        plt.xlabel("Shim iteration")
+        plt.xlabel("Calibration refinement iteration")
     else:
         plt.xlabel("Programming")
         if mag_array.shape[0] <= max_qubit_labels:
             plt.legend(flux_history.keys(), title=f"{label} Qubit index")
     plt.ylabel("Magnetization")
 
-    plt.figure("Flux_bias_by_shim_iteration")
-    plt.title("All shimmed flux_biases")
+    plt.figure("Flux_bias_by_calibration_refinement_iteration")
+    plt.title("All refined flux_biases")
     plt.plot(flux_array.transpose())
-    plt.xlabel("Shim iteration")
+    plt.xlabel("Calibration refinement iteration")
     plt.ylabel("Flux bias ($\\Phi_0$)")
     if mag_array.shape[0] <= max_qubit_labels:
         plt.legend(flux_history.keys(), title=f"{label} Qubit index")
@@ -540,7 +556,7 @@ def _plot_tds_schedules(
 def imshow_data(
     mean_Z_detector: np.ndarray,
     delays: np.ndarray,
-    colormap_type: Literal["default", "divergent"],
+    colormap_type: Literal["default", "divergent"] = "divergent",
     first: int = 0,
     last: int | None = None,
     context_str: str = "",
@@ -700,7 +716,7 @@ def estimate_decoupling_timescale(
     bqm: dimod.BinaryQuadraticModel,
     sampling_params: dict,
     detector_lines: Iterable[int],
-    detected_vars: Iterable[Variable] = (("detector", 0),),
+    detected_vars: Sequence[Variable] = None,
     preparation_orientation: float = 1.0,
     t_guess: float = 0.0,
     t_min: float | None = None,
@@ -825,19 +841,35 @@ def estimate_decoupling_timescale(
     return t_guess, data
 
 
+def _to_independent_tds(embs):
+    """Convert embeddings to independent T-D-S systems. Assume the label scheme returned by :code:`tds_graph`"""
+    independent_tds = []
+    for emb in embs:
+        independent_tds += [
+            {
+                0: emb[i],
+                ("source", 0): emb[("source", i)],
+                ("detector", 0): emb[("detector", i)],
+            }
+            for i in range(len(emb) // 3)
+        ]
+    return independent_tds
+
+
 def main(
     cache_str: str | None = None,
     solver: dict | str | None = None,
-    detector_lines: Iterable[int] = (0,),
-    source_lines: Iterable[int] = (3,),
+    detector_lines: Iterable[int] | None = None,
+    source_lines: Iterable[int] | None = None,
     seed: int | None = None,
     max_num_embeddings: int | None = None,
     target_c: float | None = None,
     target_A: float | None = None,
+    target_B: float | None = None,
     dAdc: float | None = None,
     apply_flux_bias_shim: Literal["None", "Detector", "Target-Detector"] = "Detector",
     source_decoupling_detection: bool = True,
-    verify_anneal_offsets: bool = True,
+    num_anneal_offset_iterations: int = 2,
     delay_min: float | None = None,
     delay_max: float | None = None,
     delay_min_fit: float | None = None,
@@ -850,7 +882,10 @@ def main(
     T2: float = 0.0101,
     Jtd: float = -2.0,
     Jts: float = -2.0,
+    Jtt: float = -0.2,
+    loop_length: int | None = None,
     preparation_orientation: float = 1.0,
+    embedding_timeout: int = 60,
 ) -> None:
     """Demonstrate T-D-S variability and mitigation strategies.
 
@@ -862,16 +897,15 @@ def main(
     qubit can also contribute to errors in measurement.
     Methods are demonstrated for synchronization of frequency with
     use of anneal offsets incorporating a simple decoherence model, and
-    shimming of a detector flux bias to restore symmetry.
+    calibration refinement of a detector flux bias to restore symmetry.
 
-    Higher accuracy shimming, and shimming of target flux_biases may also be
-    desirable, but are beyond the scope of the example. Note that we can
-    use simple statistics to determine flux-bias assignment on a detector
-    relative to a target. E.g. a) when decoupled from the source and detector
-    a 1 qubit model frequency omega=root(A(s)^2 + B(s)^2 h^2) is a convex
-    monotonic function of the linear field, b) When decoupled from the source
-    the response of the detector magnetization to a flux_bias perturbation is
-    maximized.
+    Higher accuracy calibration refinement, and calibration refinement of target
+    flux_biases may also be desirable, but are beyond the scope of the example.
+    Note that we can use simple statistics to determine flux-bias assignment on a
+    detector relative to a target. E.g. a) when decoupled from the source and
+    detector a 1 qubit model frequency omega=root(A(s)^2 + B(s)^2 h^2) is a convex
+    monotonic function of the linear field, b) when decoupled from the source the
+    response of the detector magnetization to a flux_bias perturbation is maximized.
 
     Args:
         cache_str:
@@ -898,26 +932,33 @@ def main(
             The expected qubit frequency in GHz.
             When None target_A is inferred from target_c (and the given processor schedule).
             Either target_A or target_c should be specified, not both.
+        target_B:
+            The expected qubit frequency in GHz for the B field.
+            When None target_B is inferred from target_c (and the given processor schedule).
+            target_B is not used to parameterize experiments.
         dAdc:
             Approximate rate of change of A(c) with the normalized control bias c
             near target_c (GHz per unit c), used to convert a frequency discrepancy
             into an anneal offset. If None, it is estimated from the schedule file.
         apply_flux_bias_shim:
-            When set to "None", flux_biases are not modified. When "Detector", flux_biases
-            are modified on detector qubits to achieve zero expected magnetization at
-            long delay. When "Target-Detector", flux_biases are modified on both target and
-            detector qubits. Target-Detector shims can diverge, particular for fast quenches of 
-            sources and detectors, at large |Jtd| |Jts|, and small target_A. 
+            When set to "None", flux_biases are not modified. When "Detector",
+            flux_biases are modified on detector qubits to achieve zero expected
+            magnetization at long delay. When "Target-Detector", flux_biases are
+            modified on both target and detector qubits. Target-Detector calibration
+            refinement can diverge, particularly for fast quenches of sources and
+            detectors, large |Jtd| or |Jts|, and small target_A.
         source_decoupling_detection:
             When True, estimate the delay required for the detector to decouple from
             the source before collecting timeseries data. When False, this detection
             stage is skipped.
-        verify_anneal_offsets:
-            When set to True, data is collected and analyzed with anneal_offsets applied.
-            When set to False, this verification stage is skipped.
-            Anneal_offsets are modified so that the peak power-spectral density is peaked at a common
-            value for all qubits. This peak value characterizes the frequency of the target
-            qubit in simple, well-calibrated models.
+        num_anneal_offset_iterations:
+            Number of anneal-offset refinement iterations to run. The first iteration
+            estimates the required offsets; subsequent iterations re-measure and
+            refine them. This verification stage is skipped when the value is 0.
+            Anneal offsets are modified so that the peak power-spectral density is
+            centered at a common target frequency for all qubits. This peak value
+            characterizes the frequency of the target qubit in simple, well-calibrated
+            models.
         delay_min: The delay on the detector line for which data is collected. If None
             determined by estimation of source decoupling.
         delay_max: The maximum delay on the detector line for which data is collected. By
@@ -969,7 +1010,7 @@ def main(
         "This example currently serves as a guide to available functionality, and "
         "some simple heuristics, in a calibration refinement context. "
         "It is not a general purpose or canonical methodology. "
-        "Correction of delays, flux_biases and anneal_offsets are correlated, "
+        "Correction of flux_biases, x_schedule_delays and anneal_offsets are correlated, "
         "and a high performance outcome may require an application-specific iterative "
         "approach with a larger number of programmings and reads than used in these examples."
     )
@@ -979,9 +1020,9 @@ def main(
         "Success in each stage is contingent on previous stages and a reasonable baseline calibration. "
         "The main stages are: "
         "embedding Target-Detector-Source systems and multi-color annealing sampling parameters; "
-        "determining flux_biases that restore an anticipated Z2 symmetry at equilibrium; "
+        "refining flux_biases to restore an anticipated Z2 symmetry at equilibrium; "
         "determining delays that characterize the preparation time (decoupling from the source); "
-        "determining anneal_offsets that improve accuracy of the target qubit frequencies."
+        "determining anneal_offsets that improve the accuracy of the target qubit frequencies."
     )
 
     # Schedule based approximations, target_A and dA/dc are approximated.
@@ -1000,7 +1041,7 @@ def main(
         )
         print(f"Schedule file used: {schedule_fn} ")
         print(
-            "For shimming of anneal offsets dA/dc must be a reasonable match in the vicinity of target_A."
+            "For calibration refinement of anneal offsets, dA/dc must be a reasonable match in the vicinity of target_A."
         )
         qpu_anneal_schedule = pd.read_excel(
             schedule_fn, sheet_name="Fast-Annealing Schedule"
@@ -1118,6 +1159,21 @@ def main(
         n: al_idx for al_idx, al in enumerate(exp_feature_info[1]) for n in al["qubits"]
     }
     num_lines = len(exp_feature_info[1])
+    # 2/3 of lines reserved for the target (typical applications)
+    if (detector_lines is None) != (source_lines is None):
+        raise ValueError(
+            "detector_lines and source_lines must either both be specified or both be None."
+        )
+    elif detector_lines is None:
+        if num_lines <= 6:
+            # 6 line convention
+            detector_lines = (0,)
+            source_lines = (num_lines // 2,)
+        else:
+            # 12 line convention
+            detector_lines = (0, num_lines // 4 + 1)
+            source_lines = (num_lines // 2, (3 * num_lines) // 4 + 1)
+
     target_lines = set(range(num_lines)) - set(detector_lines) - set(source_lines)
     cmap = plt.colormaps.get_cmap("plasma")
 
@@ -1137,6 +1193,12 @@ def main(
         x_polarizing_schedule,
         x_anneal_schedules,
     )
+    if save_figures:
+        _save_open_figures("figures/", cache_str)
+    print("Close figures to proceed to next (experimental) stages.")
+    _apply_tight_layout()
+    plt.show()
+
     # x_schedule_delays = make_tds_x_schedule_delays(
     #    x_anneal_schedules=x_anneal_schedules,
     #    quenched_lines=set(detector_lines) | set(source_lines),
@@ -1177,29 +1239,60 @@ def main(
     Tnode_to_tds = {n: _target_assignments(n) for n in qpu.nodelist}
     target_graph = nx.Graph()
     target_graph.add_node(0)
+    # Embeddings are reprocessed, to be treated as independent.
     S, Snode_to_tds = make_tds_graph(target_graph)
-    subgraph_kwargs = dict(node_labels=(Snode_to_tds, Tnode_to_tds), as_embedding=True)
+    if loop_length is not None:
+        if not (loop_length >= 4 and loop_length % 2 == 0):
+            raise ValueError(
+                "loop_length, when specified, must be an even number greater than or equal to 4."
+            )
+
+        target_graph_experiment = nx.Graph()
+        target_graph_experiment.add_nodes_from(range(loop_length))
+        target_graph_experiment.add_edges_from(
+            (i, (i + 1) % loop_length) for i in range(loop_length)
+        )
+        S_experiment, Snode_to_tds = make_tds_graph(target_graph_experiment)
+    else:
+        S_experiment = S
+
     fn_cache = f"cache/emb_{cache_str}.pkl"
     if cache_str:
         os.makedirs(os.path.dirname(fn_cache), exist_ok=True)
     if cache_str and os.path.isfile(fn_cache):
         with open(fn_cache, "rb") as f:
-            embs = pickle.load(f)
+            embs_experiment = pickle.load(f)
     else:
-        embs = find_multiple_embeddings(
-            S,
+        subgraph_kwargs = dict(
+            node_labels=(Snode_to_tds, Tnode_to_tds), as_embedding=True
+        )
+        embs_experiment = find_multiple_embeddings(
+            S_experiment,
             T,
             max_num_emb=max_num_embeddings,
             embedder_kwargs=subgraph_kwargs,
             one_to_iterable=True,
             seed=seed,
+            timeout=embedding_timeout,
         )
         with open(fn_cache, "wb") as f:
-            pickle.dump(embs, f)
+            pickle.dump(embs_experiment, f)
+    if embs_experiment is None or len(embs_experiment) == 0:
+        raise RuntimeError(
+            "No embeddings were found, try a larger embedding_timeout, simpler target (smaller or no num_loops) or new line combination."
+        )
+
+    if loop_length is not None:
+        print(
+            f"{len(embs_experiment)} independent length-{loop_length} target loops were found, where each target qubit is connected to both a source and a detector. "
+            f"In the calibration refinement stages these are treated as {len(embs_experiment)}x{loop_length} independent S-D-T systems."
+        )
+        embs = _to_independent_tds(embs_experiment)
+    else:
+        embs = embs_experiment
     print(
-        "Typically a larger calibration discrepancy should be anticipated between qubits on "
-        "different lines, compared to qubits on the same line. "
-        "Embeddings are reordered by target line for purposes of plotting to make this clearer."
+        f"{len(embs)} T-D-S placements were found; each is calibrated with parallelized data collection. "
+        "These are ordered by target line for purposes of visualization."
     )
     embs_by_line = {i: [] for i in target_lines}
     for i, emb in enumerate(embs):
@@ -1356,9 +1449,7 @@ def main(
 
     stage_idx += 1
     print()
-    print(
-        f"Stage {stage_idx}: Estimate frequencies for simple model time series data."
-    )
+    print(f"Stage {stage_idx}: Estimate frequencies for simple model time series data.")
     print(
         "Collecting data in the interval ~[0, T2] at a rate close to twice the Nyquist frequency. "
         "This allows the power-spectral density to be estimated in good agreement with a Lorentzian. "
@@ -1369,7 +1460,7 @@ def main(
         "In figures, ideal error-free high density data is shown as dashed lines, with the (coarsely) sampled "
         "model data (inclusive of some parameter perturbations and sampling errors) shown as solid lines."
     )
-        
+
     nyquist_frequency = (
         target_A * 1000 * 2
     )  # Nyquist frequency in MHz, resolve up to 2*target_A.
@@ -1511,123 +1602,124 @@ def main(
     _apply_tight_layout()
     plt.show()
 
-
-    stage_idx += 1
-    print()
-    print(
-        f"Stage {stage_idx}: Estimate anneal offsets required to achieve the target frequency {target_A:.3g}GHz (for all {n_embs} parallel embeddings)."
-    )
-    print(
-        "The power-spectral density is estimated from QPU data, and the peak value is converted to an anneal "
-        "offset using a linear model based upon the provided schedule."
-    )
-    if delay_min is None:
-        delay_min = t_decoupled + 1 / (target_A * 1000)  # Ignore first cycle.
-    if delay_min_fit is None:
-        delay_min_fit = delay_min
-    if delay_max is None:
-        delay_max = delay_min + T2
-    if delay_max_fit is None:
-        delay_max_fit = delay_max  # Can be automated for SNR in principle.
-    if not (delay_min <= delay_min_fit < delay_max_fit <= delay_max):
-        raise ValueError("The fit window is incompatible with the data window")
-
-    delays = np.linspace(
-        delay_min, delay_max, round((delay_max - delay_min) * nyquist_frequency * 2) + 1
-    )
-    dt = delays[1] - delays[0]
-
-    fn_cache = f"cache/AO_It0_{cache_str}.npy"
-    if cache_str and os.path.isfile(fn_cache):
-        mean_Z_detector = np.load(fn_cache)
-    else:
-        if not online:
-            raise RuntimeError("QPU not available, and no cached data found.")
-
-        mean_Z_detector = run_parallel_experiment(
-            sampler, bqm, sampling_params, delays, detector_lines
+    if num_anneal_offset_iterations > 0:
+        stage_idx += 1
+        print()
+        print(
+            f"Stage {stage_idx}: Estimate anneal offsets required to achieve the target frequency {target_A:.3g}GHz (for all {n_embs} parallel embeddings)."
         )
-        if cache_str:
-            np.save(fn_cache, mean_Z_detector)
+        print("offset using a linear model based upon the provided schedule.")
+        if delay_min is None:
+            delay_min = t_decoupled + 1 / (target_A * 1000)  # Ignore first cycle.
+        if delay_min_fit is None:
+            delay_min_fit = delay_min
+        if delay_max is None:
+            delay_max = delay_min + T2
+        if delay_max_fit is None:
+            delay_max_fit = delay_max  # Can be automated for SNR in principle.
+        if not (delay_min <= delay_min_fit < delay_max_fit <= delay_max):
+            raise ValueError("The fit window is incompatible with the data window")
 
-    first = np.argmax(delays >= delay_min_fit)
-    last = np.argmax(delays >= delay_max_fit) + 1
-    ld = last - first
-    if ld < 1:
-        raise ValueError("Fit window is empty: t-fit range too small for target_A")
-
-    frequencies = np.arange(ld) / dt / 1000 / ld  # GHz
-    psd = np.array(
-        [
-            np.abs(np.fft.fft(mean_Z_detector[first:last, i])) ** 2
-            for i in range(len(embs))
-        ]
-    ) / (last - first)
-
-    # Plot data #
-    line_exemplars = {line_assignments[emb[0][0]]: idx for idx, emb in enumerate(embs)}
-    plt.figure("Timeseries")
-    plt.title("Time series for several qubits using distinct target lines")
-    _plot_time_series(
-        embs,
-        line_assignments,
-        mean_Z_detector,
-        delays * 1000,
-        line_color,
-        plotted_emb_idxs=line_exemplars.values(),
-        label_emb_idxs=line_exemplars.values(),
-    )
-    for colormap_type in ["divergent", "default"]:
-        imshow_data(
-            mean_Z_detector=mean_Z_detector,
-            delays=delays,
-            colormap_type=colormap_type,
-            first=first,
-            last=last,
+        delays = np.linspace(
+            delay_min,
+            delay_max,
+            round((delay_max - delay_min) * nyquist_frequency * 2) + 1,
         )
-    plt.figure("PSD")
-    plt.title("Power associated with magnetization time series")
-    _plot_time_series(
-        embs,
-        line_assignments,
-        psd[:, : ld // 2].T,
-        frequencies[: ld // 2],
-        line_color,
-        label_emb_idxs=line_exemplars.values(),
-        xlabel=r"Frequency ($\omega$), GHz",
-        ylabel=r"Power Spectral Density, $|\langle Z\rangle(\omega)|^2$",
-    )
-    plt.plot(
-        [target_A, target_A],
-        [0, np.max(psd)],
-        color="black",
-        linestyle="dashed",
-        label="Schedule prediction",
-    )
+        dt = delays[1] - delays[0]
 
-    # Calculate anneal_offsets for synchronization
-    anneal_offsets = y = _calc_anneal_offsets(
-        frequencies, psd, target_A, dAdc
-    )  # Per embedding
-    # anneal offsets can be realized line-wise by changing target_c,
-    # or qubit-wise by modification of anneal_offset. We can
-    # correct for the mean with a line_offset, and then qubit-wise
-    # variation with the anneal offset.
+        fn_cache = f"cache/AO_It0_{cache_str}.npy"
+        if cache_str and os.path.isfile(fn_cache):
+            mean_Z_detector = np.load(fn_cache)
+        else:
+            if not online:
+                raise RuntimeError("QPU not available, and no cached data found.")
 
-    plt.figure("Proposed anneal_offsets")
+            mean_Z_detector = run_parallel_experiment(
+                sampler, bqm, sampling_params, delays, detector_lines
+            )
+            if cache_str:
+                np.save(fn_cache, mean_Z_detector)
 
-    plt.plot(sorted(y), np.arange(len(y)) / len(y))
-    plt.xlabel(
-        f"Proposed anneal offset, RMS(A0)={np.sqrt(np.mean(np.array(y)**2)):.3g}"
-    )
-    plt.ylabel("Cumulative distribution function")
-    if save_figures:
-        _save_open_figures("figures/", cache_str)
-    print("Close figures to proceed to next (experimental) stages.")
-    _apply_tight_layout()
-    plt.show()
+        first = np.argmax(delays >= delay_min_fit)
+        last = np.argmax(delays >= delay_max_fit) + 1
+        ld = last - first
+        if ld < 1:
+            raise ValueError("Fit window is empty: t-fit range too small for target_A")
 
-    if verify_anneal_offsets:
+        frequencies = np.arange(ld) / dt / 1000 / ld  # GHz
+        psd = np.array(
+            [
+                np.abs(np.fft.fft(mean_Z_detector[first:last, i])) ** 2
+                for i in range(len(embs))
+            ]
+        ) / (last - first)
+
+        # Plot data #
+        line_exemplars = {
+            line_assignments[emb[0][0]]: idx for idx, emb in enumerate(embs)
+        }
+        plt.figure("Timeseries")
+        plt.title("Time series for several qubits using distinct target lines")
+        _plot_time_series(
+            embs,
+            line_assignments,
+            mean_Z_detector,
+            delays * 1000,
+            line_color,
+            plotted_emb_idxs=line_exemplars.values(),
+            label_emb_idxs=line_exemplars.values(),
+        )
+        for colormap_type in ["divergent", "default"]:
+            imshow_data(
+                mean_Z_detector=mean_Z_detector,
+                delays=delays,
+                colormap_type=colormap_type,
+                first=first,
+                last=last,
+            )
+        plt.figure("PSD")
+        plt.title("Power associated with magnetization time series")
+        _plot_time_series(
+            embs,
+            line_assignments,
+            psd[:, : ld // 2].T,
+            frequencies[: ld // 2],
+            line_color,
+            label_emb_idxs=line_exemplars.values(),
+            xlabel=r"Frequency ($\omega$), GHz",
+            ylabel=r"Power Spectral Density, $|\langle Z\rangle(\omega)|^2$",
+        )
+        plt.plot(
+            [target_A, target_A],
+            [0, np.max(psd)],
+            color="black",
+            linestyle="dashed",
+            label="Schedule prediction",
+        )
+
+        # Calculate anneal_offsets for synchronization
+        anneal_offsets = y = _calc_anneal_offsets(
+            frequencies, psd, target_A, dAdc
+        )  # Per embedding
+        # anneal offsets can be realized line-wise by changing target_c,
+        # or qubit-wise by modification of anneal_offset. We can
+        # correct for the mean with a line_offset, and then qubit-wise
+        # variation with the anneal offset.
+
+        plt.figure("Proposed anneal_offsets")
+
+        plt.plot(sorted(y), np.arange(len(y)) / len(y))
+        plt.xlabel(
+            f"Proposed anneal offset, RMS(A0)={np.sqrt(np.mean(np.array(y)**2)):.3g}"
+        )
+        plt.ylabel("Cumulative distribution function")
+        if save_figures:
+            _save_open_figures("figures/", cache_str)
+        print("Close figures to proceed to next (experimental) stages.")
+        _apply_tight_layout()
+        plt.show()
+
+    if num_anneal_offset_iterations > 1:
         stage_idx += 1
         print()
         print(f"Stage {stage_idx}: Rerun experiment applying refined anneal offsets.")
@@ -1637,7 +1729,6 @@ def main(
         else:
             if not online:
                 raise RuntimeError("QPU not available, and no cached data found.")
-
             for emb, ao in zip(embs, anneal_offsets):
                 sampling_params["anneal_offsets"][
                     emb[0][0]
@@ -1730,6 +1821,87 @@ def main(
         _save_open_figures("figures", cache_str)
     _apply_tight_layout()
     plt.show()
+    print(
+        "If --loop_length was specified, close figures to proceed to next (experimental) stages: pi/2-pulse propagation."
+    )
+
+    if loop_length:
+        stage_idx += 1
+        print()
+        print(f"Stage {stage_idx}: pi/2 pulse propagation.")
+        print(
+            f"Target qubits are coupled with Jtt={Jtt} in loops of length {loop_length}. "
+        )
+        print(
+            "A pi/2 pulse is applied to the first (0 indexed) qubit. "
+            "targets are then measured in the (same) computational basis subject to delay. "
+        )
+        print(
+            "We anticipate excitation propagation around the loop subject to interference. "
+        )
+        if target_B is not None:
+            print(
+                f"Propagation occurs on a time scale  ~ 1/(B(s) |Jtt|) = {1/np.abs(target_B * Jtt)}"
+            )
+        sampler_experiment = ParallelEmbeddingComposite(qpu, embeddings=embs_experiment)
+        bqm_experiment = dimod.BinaryQuadraticModel("SPIN").from_ising(
+            {n: 0 for n in S_experiment.nodes()},
+            {
+                e: Jtd
+                for e in S_experiment.edges()
+                if any(Snode_to_tds[v] == "detector" for v in e)
+            }
+            | {
+                e: Jts
+                for e in S_experiment.edges()
+                if any((Snode_to_tds[v] == "source" and v[1] == 0) for v in e)
+            }
+            | {
+                e: Jtt
+                for e in S_experiment.edges()
+                if all(Snode_to_tds[v] == "target" for v in e)
+            },
+        )  # bqm restricted to decoupled source and target nodes
+        fn_cache = f"cache/LoopExperiment_{cache_str}.npy"
+        if cache_str and os.path.isfile(fn_cache):
+            mean_Z_detector = np.load(fn_cache)
+        else:
+            mean_Z_detector = run_parallel_experiment(
+                sampler_experiment,
+                bqm_experiment,
+                sampling_params,
+                delays,
+                detector_lines,
+            )
+            if cache_str:
+                np.save(fn_cache, mean_Z_detector)
+        square_data = mean_Z_detector.reshape(mean_Z_detector.shape[0], -1)
+
+        print(
+            "Note: The x-axis is ordered by position on the ring, rather than target line assignment (per earlier plots). "
+            "The excitation propagates in two directions (left and right, modulo the periodic boundary condition)"
+        )
+        if len(embs_experiment) > 1:
+            print(
+                f"The plot is divided into {len(embs_experiment)} panels, reflecting independent (decoupled) embeddings that were programmed in parallel"
+            )
+
+        imshow_data(
+            square_data,
+            delays=delays,
+            context_str=f"coupled loop length={loop_length}",
+        )
+        ax = plt.gca()
+        rows, cols = square_data.shape
+        line_x = np.arange(0.5 + loop_length, cols - 0.5, loop_length)
+        ax.vlines(x=line_x, ymin=-0.5, ymax=rows - 0.5, colors="black", linewidth=1.5)
+        plt.title(
+            f"{len(embs_experiment)} target loops of length {loop_length}, each with pi/2-pulse at origin."
+        )
+        if save_figures:
+            _save_open_figures("figures", cache_str)
+        _apply_tight_layout()
+        plt.show()
 
 
 if __name__ == "__main__":
@@ -1737,7 +1909,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description=(
             "Target-detector-source embedding demo with optional flux-bias "
-            "shimming and anneal-offset refinement."
+            "calibration refinement and anneal-offset refinement."
         )
     )
     parser.add_argument(
@@ -1762,7 +1934,7 @@ if __name__ == "__main__":
         type=int,
         nargs="+",
         help="Detector lines (one or more integer indices).",
-        default=[0],  # First vertical qubit line
+        default=None,  # First vertical qubit line
     )
     parser.add_argument(
         "--source-lines",
@@ -1770,7 +1942,7 @@ if __name__ == "__main__":
         type=int,
         nargs="+",
         help="Source lines (one or more integer indices).",
-        default=[3],  # First horizontal qubit line under 6-line control
+        default=None,  # First horizontal qubit line under 6-line control
     )
     parser.add_argument(
         "--seed",
@@ -1817,14 +1989,31 @@ if __name__ == "__main__":
         default=-2.0,
     )
     parser.add_argument(
+        "--Jtt",
+        dest="Jtt",
+        type=float,
+        help="Coupling strength between target and target qubits. The parameter is ignored unless a loop length is specified. "
+        "Note that a sufficiently weak coupling limit [B(s_target) J_tt << A(s_target)] is required for independent sourcing and detection of qubits.",
+        default=-0.2,
+    )
+    parser.add_argument(
+        "--loop-length",
+        dest="loop_length",
+        type=int,
+        help="Length of the loop model (even and >=4 if specified). "
+        "By default, independent T-D-S systems are modeled (a Larmour precession example)."
+        "If N is specified then T-D-S systems compatible with unfrustrated loops of length N are embedded.",
+        default=None,
+    )
+    parser.add_argument(
         "--apply-flux-bias-shim",
         dest="apply_flux_bias_shim",
         type=str,
         choices=["None", "Detector", "Target-Detector"],
         default="Detector",
-        help="Flux-bias shimming mode: 'None' disables shimming; "
-        "'Detector' shims detector qubit flux_biases to achieve zero measured magnetization; "
-        "'Target-Detector' alternates detector/target roles to shim detector and target flux_biases "
+        help="Flux-bias calibration refinement mode: 'None' disables calibration refinement; "
+        "'Detector' refines detector qubit flux_biases to achieve zero measured magnetization; "
+        "'Target-Detector' alternates detector/target roles to refine detector and target flux_biases "
         " (this can cause divergences, particularly at small frequencies and "
         "when target_c is desynchronized).",
     )
@@ -1836,10 +2025,11 @@ if __name__ == "__main__":
         help="Disable detection of the delay required for source decoupling.",
     )
     parser.add_argument(
-        "--skip-anneal-offset-verification",
-        dest="skip_anneal_offset_verification",
-        action="store_true",
-        help="Skip the data analysis stage with anneal offsets applied.",
+        "--num_anneal_offset_iterations",
+        dest="num_anneal_offset_iterations",
+        type=int,
+        help="Number of anneal-offset iterations to perform. Note that a second iteration is useful to verify the first iteration (thus 2 by default).",
+        default=2,
     )
     parser.add_argument(
         "--common-c-bounds",
@@ -1847,7 +2037,7 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="Enable common c-bounds alignment across annealing lines. "
-        "This is necessary for use of the TDS flux shimming method.",
+        "This is necessary for the Target-Detector/TDS calibration-refinement method.",
     )
     parser.add_argument(
         "--no-overshoot",
@@ -1871,16 +2061,18 @@ if __name__ == "__main__":
     main(
         cache_str=cache_str,
         solver=args.solver_name,
-        detector_lines=tuple(args.detector_lines),
-        source_lines=tuple(args.source_lines),
+        detector_lines=args.detector_lines,
+        source_lines=args.source_lines,
         target_A=args.target_A,
         schedule_fn=args.schedule_fn,
         source_decoupling_detection=args.source_decoupling_detection,
-        verify_anneal_offsets=not args.skip_anneal_offset_verification,
+        num_anneal_offset_iterations=args.num_anneal_offset_iterations,
         apply_flux_bias_shim=args.apply_flux_bias_shim,
         use_common_c_bounds=args.use_common_c_bounds,
         use_overshoot=args.use_overshoot,
         save_figures=args.save_figures,
         Jts=args.Jts,
         Jtd=args.Jtd,
+        Jtt=args.Jtt,
+        loop_length=args.loop_length,
     )
