@@ -875,7 +875,7 @@ def main(
     target_A: float | None = None,
     target_B: float | None = None,
     dAdc: float | None = None,
-    apply_flux_bias_shim: Literal["None", "Detector", "Target-Detector"] = "Detector",
+    flux_biases_method: Literal["None", "Detector", "Target-Detector"] = "Detector",
     t_decoupled: float | None = None,
     num_anneal_offset_iterations: int = 2,
     schedule_fn: str = "09-1323A-D_Advantage2_system4_annealing_schedule.xlsx",
@@ -884,9 +884,9 @@ def main(
     use_overshoot: bool = True,
     save_figures: bool = False,
     T2: float = 0.0101,
-    Jtd: float = -2.0,
-    Jts: float = -2.0,
-    Jtt: float = -0.2,
+    Jtd: float = 1.0,
+    Jts: float = 1.0,
+    Jtt: float = 0.1,
     loop_length: int | None = None,
     preparation_orientation: float = 1.0,
     embedding_timeout: int = 60,
@@ -946,7 +946,7 @@ def main(
             Approximate rate of change of A(c) with the normalized control bias c
             near target_c (GHz per unit c), used to convert a frequency discrepancy
             into an anneal offset. If None, it is estimated from the schedule file.
-        apply_flux_bias_shim:
+        flux_biases_method:
             When set to "None", flux_biases are not modified. When "Detector",
             flux_biases are modified on detector qubits to achieve zero expected
             magnetization at long delay. When "Target-Detector", flux_biases are
@@ -1330,7 +1330,7 @@ def main(
         | {e: Jts for e in S.edges() if any(Snode_to_tds[v] == "source" for v in e)},
     )  # bqm restricted to decoupled source and target nodes
 
-    if apply_flux_bias_shim != "None":
+    if flux_biases_method != "None":
         stage_idx += 1
         print()
         print(f"Stage {stage_idx}: Refine flux_biases")
@@ -1359,7 +1359,7 @@ def main(
                 if line_assignments[n] in detector_lines
             }
 
-            if apply_flux_bias_shim == "Target-Detector":
+            if flux_biases_method == "Target-Detector":
                 print(
                     "Refine flux_biases for zero magnetization on detector "
                     "and target qubits at equilibrium (with sources depolarized)"
@@ -1373,7 +1373,7 @@ def main(
                     detector_lines=set(detector_lines),
                     line_assignments=line_assignments,
                 )
-            elif apply_flux_bias_shim == "Detector":
+            elif flux_biases_method == "Detector":
                 print(
                     "Refine flux_biases for zero detector magnetization in"
                     " the limit of long delay (at equilibrium)."
@@ -2024,16 +2024,18 @@ if __name__ == "__main__":
         dest="Jts",
         type=float,
         help="Coupling strength between target and source qubits. "
-        "Extended range is used by default (to maximize effective quench rate).",
-        default=-2.0,
+        "The AFM value maximizing the effective quench rate is used. "
+        "Note that, an FM value (-2.0) can achieve higher quench rates still but at risk of enhanced control errors",
+        default=1.0,
     )
     parser.add_argument(
         "--Jtd",
         dest="Jtd",
         type=float,
         help="Coupling strength between target and detector qubits. "
-        "Extended range is used by default (to maximize effective quench rate).",
-        default=-2.0,
+        "The AFM value maximizing the effective quench rate is used. "
+        "Note that, an FM value (-2.0) can achieve higher quench rates still but at risk of enhanced control errors",
+        default=1.0,
     )
     parser.add_argument(
         "--Jtt",
@@ -2041,7 +2043,7 @@ if __name__ == "__main__":
         type=float,
         help="Coupling strength between target and target qubits. The parameter is ignored unless a loop length is specified. "
         "Note that a sufficiently weak coupling limit [B(s_target) J_tt << A(s_target)] is required for independent sourcing and detection of qubits.",
-        default=-0.2,
+        default=-0.1,
     )
     parser.add_argument(
         "--loop-length",
@@ -2053,8 +2055,8 @@ if __name__ == "__main__":
         default=None,
     )
     parser.add_argument(
-        "--apply-flux-bias-shim",
-        dest="apply_flux_bias_shim",
+        "--flux-bias-method",
+        dest="flux_biases_method",
         type=str,
         choices=["None", "Detector", "Target-Detector"],
         default="Detector",
@@ -2115,7 +2117,7 @@ if __name__ == "__main__":
         schedule_fn=args.schedule_fn,
         t_decoupled=args.t_decoupled,
         num_anneal_offset_iterations=args.num_anneal_offset_iterations,
-        apply_flux_bias_shim=args.apply_flux_bias_shim,
+        flux_biases_method=args.flux_biases_method,
         use_common_c_bounds=args.use_common_c_bounds,
         use_overshoot=args.use_overshoot,
         save_figures=args.save_figures,
