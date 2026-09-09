@@ -438,6 +438,7 @@ def shim_tds_flux_biases(
     detector_lines: set,
     line_assignments: dict,
     *,
+    by_line_pair: bool = True,
     sampling_params: dict[str, Any] | None = None,
     learning_schedule: Optional[Iterable[float]] = None,
     convergence_test: Optional[Callable] = None,
@@ -494,6 +495,8 @@ def shim_tds_flux_biases(
             parameter.
         line_assignments: Maps each variable (qubit index) to its annealing
             line index.
+        by_line_pair: If ``True``, the shimming is performed independently
+            for each combination of source and detector line.
         sampling_params: Base sampling parameters passed to the sampler.
             If not specified, then defaults are used. A minimal set of
             functional parameters should include ``x_anneal_schedules`` and
@@ -546,7 +549,37 @@ def shim_tds_flux_biases(
         3.  History of magnetizations per variable across experiments
             and iterations.
     """
-
+    if by_line_pair and (len(target_lines) > 0 or len(detector_lines) > 0):
+        # degenerate detector lines interfere post-quench, therefore process separately.
+        flux_biases = sampling_params.pop("flux_biases", None)
+        dict_fb_all = {}
+        dict_mag_all = {}
+        for target_line in target_lines:
+            for detector_line in detector_lines:
+                flux_biases, dict_fb, dict_mag = shim_tds_flux_biases(
+                    bqm=bqm,
+                    sampler=sampler,
+                    target_lines={target_line},
+                    detector_lines={detector_line},
+                    line_assignments=line_assignments,
+                    by_line_pair=False,
+                    sampling_params=sampling_params,
+                    learning_schedule=learning_schedule,
+                    convergence_test=convergence_test,
+                    symmetrize_experiments=symmetrize_experiments,
+                    beta_hypergradient=beta_hypergradient,
+                    num_steps=num_steps,
+                    alpha=alpha,
+                    shimmed_variables=shimmed_variables,
+                    set_unused_lines_to_zero=set_unused_lines_to_zero,
+                    decouple_tar_and_det=decouple_tar_and_det,
+                    exp_feature_line_info=exp_feature_line_info,
+                    target_c=target_c,
+                    num_reads=num_reads,
+                )
+                dict_fb_all.update(dict_fb)
+                dict_mag_all.update(dict_mag)
+        return flux_biases, dict_fb_all, dict_mag_all
     num_lines = (
         len(sampling_params["x_anneal_schedules"])
         if exp_feature_line_info is None
