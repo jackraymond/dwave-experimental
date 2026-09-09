@@ -37,6 +37,7 @@ from typing import Collection, Iterable, Literal, Sequence
 import pickle
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.colors import SymLogNorm
 import networkx as nx
 import numpy as np
 from tqdm import tqdm
@@ -557,6 +558,7 @@ def imshow_data(
     mean_Z_detector: np.ndarray,
     delays: np.ndarray,
     colormap_type: Literal["default", "divergent"] = "divergent",
+    linthresh: float = 1.0,
     first: int = 0,
     last: int | None = None,
     context_str: str = "",
@@ -573,6 +575,8 @@ def imshow_data(
         delays: Array of time delay values (microseconds); ytick labels are
             rendered in nanoseconds (values are multiplied by 1000).
         colormap_type: Type of colormap to use ("default" or "divergent").
+        linthresh: Threshold for the symmetric logarithmic colormap
+            (only relevant if colormap_type is "divergent").
         first: Index whose delay value is highlighted as an additional ytick
             label. Does not restrict the plotted range.
         last: Index one past the last delay value highlighted as an additional
@@ -585,13 +589,13 @@ def imshow_data(
     """
     fig_title = f"Timeseries_{colormap_type}_colormap{context_str}"
     if colormap_type == "divergent":
-        vmin, vmax, cmap = -1, 1, "RdBu"
+        norm, cmap = SymLogNorm(linthresh=linthresh, vmin=-1, vmax=1), "RdBu"
     else:
-        vmin, vmax, cmap = None, None, None
+        norm, cmap = None, None
     if ax is None:
         ax = plt.figure(fig_title).gca()
         ax.set_title(f"Real-space magnetization {context_str}".strip())
-    ax.imshow(mean_Z_detector, vmin=vmin, vmax=vmax, cmap=cmap)
+    ax.imshow(mean_Z_detector, norm=norm, cmap=cmap)
     if last is None:
         last = mean_Z_detector.shape[0]
     yticks_dict = {
@@ -1235,7 +1239,7 @@ def main(
     print(
         "Finding embeddings is NP-hard in general. The routine attempts to find many "
         f"such embeddings that can be programmed in parallel. If no embedding is found "
-        f"within the (CLI configuable) timeout of {embedding_timeout} seconds, the search is terminated."
+        f"within the (CLI configurable) timeout of {embedding_timeout} seconds, the search is terminated."
     )
 
     T = qpu.to_networkx_graph()
@@ -1329,7 +1333,10 @@ def main(
         {e: Jtd for e in S.edges() if any(Snode_to_tds[v] == "detector" for v in e)}
         | {e: Jts for e in S.edges() if any(Snode_to_tds[v] == "source" for v in e)},
     )  # bqm restricted to decoupled source and target nodes
-
+    bqm_td = dimod.BinaryQuadraticModel("SPIN").from_ising(
+        {n: 0 for n in S.nodes() if Snode_to_tds[n] != "source"},
+        {e: Jtd for e in S.edges() if any(Snode_to_tds[v] == "detector" for v in e)},
+    )  # Relevant to flux shimmi
     if flux_biases_method != "None":
         stage_idx += 1
         print()
@@ -1346,11 +1353,11 @@ def main(
             # Require zero magnetization in the limit of long delay (where
             # source impact has decayed away.
             bqm_embedded = dimod.BinaryQuadraticModel("SPIN").from_ising(
-                {emb[n][0]: h for emb in embs for n, h in bqm.linear.items()},
+                {emb[n][0]: h for emb in embs for n, h in bqm_td.linear.items()},
                 {
                     tuple(emb[n][0] for n in e): J
                     for emb in embs
-                    for e, J in bqm.quadratic.items()
+                    for e, J in bqm_td.quadratic.items()
                 },
             )
             shimmed_variables = {
@@ -1358,11 +1365,13 @@ def main(
                 for n in bqm_embedded.variables
                 if line_assignments[n] in detector_lines
             }
-
+            x_polarizing_schedule = sampling_params.pop(
+                "x_polarizing_schedule", None
+            )  # Remove polarizing signal
             if flux_biases_method == "Target-Detector":
                 print(
-                    "Refine flux_biases for zero magnetization on detector "
-                    "and target qubits at equilibrium (with sources depolarized)"
+                    "Refine target and detector flux_biases for unbiased target and detector "
+                    "qubits at equilibrium with sources decoupled and depolarized."
                 )
 
                 flux_biases, flux_history, mag_history = shim_tds_flux_biases(
@@ -1375,24 +1384,18 @@ def main(
                 )
             elif flux_biases_method == "Detector":
                 print(
-                    "Refine flux_biases for zero detector magnetization in"
-                    " the limit of long delay (at equilibrium)."
+                    "Refine detector flux_biases for unbiased detector magnetization with"
+                    " sources decoupled and depolarized."
                 )
-                # Deep for float Sequence with ndarray or list of floats:
-                x_schedule_delays = sampling_params["x_schedule_delays"].copy()
-                for line in detector_lines:
-                    sampling_params["x_schedule_delays"][
-                        line
-                    ] = 0.1  # Documented limit (>> T2, thence near equilibrium), averaging source polarization strictly removes the bias.
                 flux_biases, flux_history, mag_history = shim_flux_biases(
                     bqm=bqm_embedded,
                     sampler=qpu,
                     sampling_params=sampling_params,
                     shimmed_variables=shimmed_variables,
                 )
-                sampling_params["x_schedule_delays"] = x_schedule_delays
             else:
                 raise ValueError("Unknown method")
+
             polarization_candidates = [
                 (i, flux_biases[i])
                 for i in range(len(flux_biases))
@@ -1405,6 +1408,9 @@ def main(
                     "for evidence of polarization and report bad qubits."
                 )
                 print(polarization_candidates)
+
+            if x_polarizing_schedule is not None:
+                sampling_params["x_polarizing_schedule"] = x_polarizing_schedule
             if cache_str:
                 with open(fn_cache, "wb") as f:
                     pickle.dump((flux_biases, flux_history, mag_history), f)
