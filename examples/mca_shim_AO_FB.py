@@ -561,6 +561,7 @@ def imshow_data(
     last: int | None = None,
     context_str: str = "",
     plt_show_block: None | bool = None,
+    ax=None,
 ) -> None:
     """Display detector magnetization data as a heatmap.
 
@@ -580,15 +581,17 @@ def imshow_data(
         context_str: Optional context string to append to figure title.
         plt_show_block: If not None (default), then execute
             :code:`plt.show(block=plt_show_block)` to display the figure.
+        ax: Optional matplotlib axes instance for plotting into an existing figure.
     """
     fig_title = f"Timeseries_{colormap_type}_colormap{context_str}"
     if colormap_type == "divergent":
         vmin, vmax, cmap = -1, 1, "RdBu"
     else:
         vmin, vmax, cmap = None, None, None
-    plt.figure(fig_title)
-    plt.title(f"Real space magnetizations: {context_str}")
-    plt.imshow(mean_Z_detector, vmin=vmin, vmax=vmax, cmap=cmap)
+    if ax is None:
+        ax = plt.figure(fig_title).gca()
+        ax.set_title(f"Real-space magnetization {context_str}".strip())
+    ax.imshow(mean_Z_detector, vmin=vmin, vmax=vmax, cmap=cmap)
     if last is None:
         last = mean_Z_detector.shape[0]
     yticks_dict = {
@@ -601,12 +604,12 @@ def imshow_data(
             mean_Z_detector.shape[0] - 1: f"{1000 * delays[-1]:.3g}",
         }
     )
-    plt.yticks(
+    ax.set_yticks(
         list(yticks_dict.keys()),
         list(yticks_dict.values()),
     )
-    plt.xlabel("Target-Detector-Source embedding")
-    plt.ylabel("Delay, nanoseconds")
+    ax.set_xlabel("Target-Detector-Source embedding")
+    ax.set_ylabel("Delay, nanoseconds")
     _apply_tight_layout()
     if plt_show_block is not None:
         plt.show(block=plt_show_block)
@@ -662,6 +665,7 @@ def _plot_time_series(
     xlabel: str = "Delay, nanoseconds",
     ylabel: str = "Detector magnetizations",
     plt_show_block: None | bool = None,
+    ax=None,
 ) -> None:
     """Plot time series data for selected embeddings with line-based coloring.
 
@@ -680,7 +684,11 @@ def _plot_time_series(
         ylabel: Label for the y-axis.
         plt_show_block: If not None (default), then execute
             :code:`plt.show(block=plt_show_block)` to display the figure.
+        ax: Optional matplotlib axes instance for plotting into an existing figure.
     """
+
+    if ax is None:
+        ax = plt.gca()
 
     if plotted_emb_idxs is None:
         plotted_emb_idxs = set(range(len(embs)))
@@ -701,12 +709,11 @@ def _plot_time_series(
             color = line_color[line_idx]
         else:
             color = None
-        plt.plot(delays, mean_Z_detector[:, emb_idx], color=color, label=label)
-    plt.ylabel(ylabel)
-    plt.xlabel(xlabel)
-    plt.legend()
-    plt.grid()
-    _apply_tight_layout()
+        ax.plot(delays, mean_Z_detector[:, emb_idx], color=color, label=label)
+    ax.set_ylabel(ylabel)
+    ax.set_xlabel(xlabel)
+    ax.legend()
+    ax.grid()
     if plt_show_block is not None:
         plt.show(block=plt_show_block)
 
@@ -861,6 +868,7 @@ def main(
     solver: dict | str | None = None,
     detector_lines: Iterable[int] | None = None,
     source_lines: Iterable[int] | None = None,
+    target_lines: Iterable[int] | None = None,
     seed: int | None = None,
     max_num_embeddings: int | None = None,
     target_c: float | None = None,
@@ -868,12 +876,8 @@ def main(
     target_B: float | None = None,
     dAdc: float | None = None,
     apply_flux_bias_shim: Literal["None", "Detector", "Target-Detector"] = "Detector",
-    source_decoupling_detection: bool = True,
+    t_decoupled: float | None = None,
     num_anneal_offset_iterations: int = 2,
-    delay_min: float | None = None,
-    delay_max: float | None = None,
-    delay_min_fit: float | None = None,
-    delay_max_fit: float | None = None,
     schedule_fn: str = "09-1323A-D_Advantage2_system4_annealing_schedule.xlsx",
     num_reads: int = 500,
     use_common_c_bounds: bool = True,
@@ -886,6 +890,8 @@ def main(
     loop_length: int | None = None,
     preparation_orientation: float = 1.0,
     embedding_timeout: int = 60,
+    colormap_type: Literal["divergent", "default"] = "divergent",
+    dt_div_A_final: float = 0.25,
 ) -> None:
     """Demonstrate T-D-S variability and mitigation strategies.
 
@@ -959,18 +965,6 @@ def main(
             centered at a common target frequency for all qubits. This peak value
             characterizes the frequency of the target qubit in simple, well-calibrated
             models.
-        delay_min: The delay on the detector line for which data is collected. If None
-            determined by estimation of source decoupling.
-        delay_max: The maximum delay on the detector line for which data is collected. By
-            default delay_min + T2
-        delay_min_fit:
-            A lower bound on the timeseries window used for inference of the target power spectral density.
-            A value that is too small can bias the estimator by introduction of effects related
-            to coupling to the source line.
-        delay_max_fit:
-            An upper bound on the timeseries window used for inference of the target power spectral density.
-            Too large a value reduces the efficiency of the estimator, since delays much larger than the
-            T1 coherence time are dominated by noise.
         schedule_fn: A schedule file that is used to estimate an appropriate sampling interval for delay
             time and an appropriate scale for anneal_offset synchronization. This should be matched to the
             solver.
@@ -991,7 +985,9 @@ def main(
         Jts: The coupling strength between target and source qubits.
         preparation_orientation: The orientation of the target qubit whilst coupled
             to the source.
-
+        dt_div_A_final: Sampling rate for the final (loop) experiment. Defaults
+            to the same value used in anneal_offset shimming (1/4), smaller values
+            can be used for pretty plots.
     Raises:
         ValueError: If the fit window (``delay_min_fit``, ``delay_max_fit``)
             is incompatible with the data window (``delay_min``, ``delay_max``)
@@ -1024,7 +1020,10 @@ def main(
         "determining delays that characterize the preparation time (decoupling from the source); "
         "determining anneal_offsets that improve the accuracy of the target qubit frequencies."
     )
-
+    print()
+    print(
+        "Note: To save experiment embeddings and data for replotting add the --use-cache flag."
+    )
     # Schedule based approximations, target_A and dA/dc are approximated.
     stage_idx = -1
 
@@ -1037,7 +1036,8 @@ def main(
         stage_idx += 1
         print()
         print(
-            f"Stage {stage_idx}: Estimate target_A, target_c and dA/dc. Plot the annealing schedule."
+            f"Stage {stage_idx}: Estimate consistent target_A, target_c and dA/dc from the given qpu schedule. "
+            "These are used to parameterize the anneal_offset refinement method, and the accuracy threshold for x_schedule_delays refinements."
         )
         print(f"Schedule file used: {schedule_fn} ")
         print(
@@ -1124,6 +1124,13 @@ def main(
             f"B(target_c) = {target_B:.3g} GHz",
         )
 
+    stage_idx += 1
+    print()
+    print(
+        f"Stage {stage_idx}: Build multi color annealing waveforms compatible with the "
+        f"research QPU."
+    )
+
     if cache_str:
         qpu_fn = f"cache/qpu_{cache_str}.pkl"
     try:
@@ -1173,8 +1180,9 @@ def main(
             # 12 line convention
             detector_lines = (0, num_lines // 4 + 1)
             source_lines = (num_lines // 2, (3 * num_lines) // 4 + 1)
+    if target_lines is None:
+        target_lines = set(range(num_lines)) - set(detector_lines) - set(source_lines)
 
-    target_lines = set(range(num_lines)) - set(detector_lines) - set(source_lines)
     cmap = plt.colormaps.get_cmap("plasma")
 
     line_color = [cmap(i / (num_lines - 1)) for i in range(num_lines)]
@@ -1195,7 +1203,7 @@ def main(
     )
     if save_figures:
         _save_open_figures("figures/", cache_str)
-    print("Close figures to proceed to next (experimental) stages.")
+    print("Close figures to proceed to next stages.")
     _apply_tight_layout()
     plt.show()
 
@@ -1224,6 +1232,12 @@ def main(
     print()
     print(f"Stage {stage_idx}: Find T-D-S embeddings for parallel programming")
     print("(see mca_embedding.py example).")
+    print(
+        "Finding embeddings is NP-hard in general. The routine attempts to find many "
+        f"such embeddings that can be programmed in parallel. If no embedding is found "
+        f"within the (CLI configuable) timeout of {embedding_timeout} seconds, the search is terminated."
+    )
+
     T = qpu.to_networkx_graph()
 
     def _target_assignments(n: int) -> str:
@@ -1233,8 +1247,10 @@ def main(
             return "detector"
         elif line in source_lines:
             return "source"
-        else:
+        elif line in target_lines:
             return "target"
+        else:
+            return "unknown"
 
     Tnode_to_tds = {n: _target_assignments(n) for n in qpu.nodelist}
     target_graph = nx.Graph()
@@ -1259,12 +1275,15 @@ def main(
     fn_cache = f"cache/emb_{cache_str}.pkl"
     if cache_str:
         os.makedirs(os.path.dirname(fn_cache), exist_ok=True)
+
     if cache_str and os.path.isfile(fn_cache):
         with open(fn_cache, "rb") as f:
             embs_experiment = pickle.load(f)
     else:
         subgraph_kwargs = dict(
-            node_labels=(Snode_to_tds, Tnode_to_tds), as_embedding=True
+            node_labels=(Snode_to_tds, Tnode_to_tds),
+            as_embedding=True,
+            timeout=embedding_timeout,
         )
         embs_experiment = find_multiple_embeddings(
             S_experiment,
@@ -1275,12 +1294,13 @@ def main(
             seed=seed,
             timeout=embedding_timeout,
         )
-        with open(fn_cache, "wb") as f:
-            pickle.dump(embs_experiment, f)
-    if embs_experiment is None or len(embs_experiment) == 0:
-        raise RuntimeError(
-            "No embeddings were found, try a larger embedding_timeout, simpler target (smaller or no num_loops) or new line combination."
-        )
+        if len(embs_experiment) == 0:
+            raise RuntimeError(
+                "No embeddings were found, try a larger embedding_timeout, simpler target (smaller or no num_loops) or new line combination."
+            )
+        else:
+            with open(fn_cache, "wb") as f:
+                pickle.dump(embs_experiment, f)
 
     if loop_length is not None:
         print(
@@ -1311,6 +1331,10 @@ def main(
     )  # bqm restricted to decoupled source and target nodes
 
     if apply_flux_bias_shim != "None":
+        stage_idx += 1
+        print()
+        print(f"Stage {stage_idx}: Refine flux_biases")
+
         x_polarizing_schedule = sampling_params.pop("x_polarizing_schedule")
         fn_cache = f"cache/FB_{cache_str}.npy"
         if cache_str and os.path.isfile(fn_cache):
@@ -1348,8 +1372,6 @@ def main(
                     target_lines=set(target_lines),
                     detector_lines=set(detector_lines),
                     line_assignments=line_assignments,
-                    # exp_feature_line_info=exp_feature_info[1],  # Can replace explicit sampling_params
-                    # target_c=target_c,  # Can replace explicit sampling_params
                 )
             elif apply_flux_bias_shim == "Detector":
                 print(
@@ -1393,12 +1415,12 @@ def main(
         sampling_params["flux_biases"] = flux_biases
         if save_figures:
             _save_open_figures("figures/", cache_str)
-        print("Close figures to proceed to next (experimental) stages.")
+        print("Close figures to proceed to next stages.")
         _apply_tight_layout()
         plt.show()
         sampling_params["x_polarizing_schedule"] = x_polarizing_schedule
 
-    if source_decoupling_detection:
+    if t_decoupled is None:
         stage_idx += 1
         print()
         print(
@@ -1409,6 +1431,12 @@ def main(
             "Larmor precession proceeds from the point where decoupling occurs; "
             "determine this processor- and anneal-schedule-specific value."
         )
+        if len(detector_lines) > 1 or len(source_lines) > 1:
+            print(
+                "WARNING: Multiple detector or source lines detected. Delays could vary by line combination. "
+                "A feature to handle this branching is not yet implemented, so the bulk delay calculated might "
+                "be an inappropriate middle ground."
+            )
 
         fn_cache = f"cache/source_decoupling_{cache_str}.pkl"
         if cache_str and os.path.isfile(fn_cache):
@@ -1443,189 +1471,153 @@ def main(
         plt.legend()
         if save_figures:
             _save_open_figures("figures/", cache_str)
-        print("Close figures to proceed to next (experimental) stages.")
+        print("Close figures to proceed to next stages.")
         _apply_tight_layout()
         plt.show()
 
-    stage_idx += 1
-    print()
-    print(f"Stage {stage_idx}: Estimate frequencies for simple model time series data.")
-    print(
-        "Collecting data in the interval ~[0, T2] at a rate close to twice the Nyquist frequency. "
-        "This allows the power-spectral density to be estimated in good agreement with a Lorentzian. "
-        "The model target frequency can be approximated from the peak to reasonable precision. "
-        "Methods of higher accuracy are available, for example by exploiting phase information and "
-        "collecting data at higher sampling rates, but this power spectral density method is "
-        "sufficient to resolve discrepancies up to a scale O(0.01GHz) relevant to calibration refinement. "
-        "In figures, ideal error-free high density data is shown as dashed lines, with the (coarsely) sampled "
-        "model data (inclusive of some parameter perturbations and sampling errors) shown as solid lines."
-    )
+    # Collecting regularly spaced data on the interval [0, T2], post
+    # source decoupling, is not optimal for inference of calibration
+    # errors, but (IMO) allows intuitive estimators and data series.
+    # Nyquist frequency in MHz, resolving up to 2*target_A.
+    nyquist_frequency = target_A * 1000 * 2
 
-    nyquist_frequency = (
-        target_A * 1000 * 2
-    )  # Nyquist frequency in MHz, resolve up to 2*target_A.
-    delay_max_art = T2
-    delay_min_art = 0.0
+    delay_min_fit = delay_min = t_decoupled + 1 / (
+        target_A * 1000
+    )  # Ignore first cycle.
+    delay_max_fit = delay_max = delay_min + T2
     delays = np.linspace(
-        delay_min_art,
-        delay_max_art,
-        round((delay_max_art - delay_min_art) * (2 * nyquist_frequency)) + 1,
-        endpoint=True,
+        delay_min,
+        delay_max,
+        round((delay_max - delay_min) * nyquist_frequency * 2) + 1,
     )
-    dt = delays[1] - delays[0]  # Rounding
-
-    dt_hd = 0.00001  # 0.01 nanoseconds, close to practical limit.
-    high_density_delays = np.linspace(
-        delay_min_art,
-        delay_max_art,
-        round((delay_max_art - delay_min_art) / dt_hd),
-        endpoint=False,
-    )
-    dt_hd = high_density_delays[1] - high_density_delays[0]  # Rounding
-
-    # theta_s = theta_d = pi/2, other parameters are pertured (should revisit for completeness).
-    # note that the random delay, and random phi_s-phi_d deviations are qualitatively
-    # captured by a single time delay.
-    for A in [target_Aminus, target_A, target_Aplus]:
-        delay_perturbation = 1 / (A * 1000) * np.random.random()
-        T2_perturbed = 0.0101 * (1 + 0.1 * np.random.random())
-        label = f"A={A:.3g}"
-        theta_s = np.pi / 2 * preparation_orientation
-        signal = artificial_data(
-            delays + delay_perturbation,
-            A * 1000,
-            num_independent_samples=num_reads,
-            theta_s=theta_s,
-            T2=T2_perturbed,
-        )
-        ideal_high_density_signal = artificial_data(
-            high_density_delays + delay_perturbation,
-            A * 1000,
-            num_independent_samples=float("Inf"),  # No noise
-            theta_s=theta_s,
-        )
-        fig = plt.figure("artificial_timeseries")
-        next_color = fig.gca()._get_lines.get_next_color()
-        plt.title("y=cos(2pi A t)exp(-t/T)+sampling error")
-        plt.plot(
-            (delays + delay_perturbation) * 1000,
-            signal,
-            label=label,
-            marker=".",
-            linestyle=None,
-            color=next_color,
-        )
-        plt.plot(
-            (high_density_delays + delay_perturbation) * 1000,
-            ideal_high_density_signal,
-            linestyle="dotted",
-            color=next_color,
-        )
-        plt.xlabel("Time, nanoseconds")
-        plt.ylabel(r"Magnetization, $\langle y \rangle_{detector}$")
-        plt.legend()
-
-        plt.figure("artificial_psd")
-        psd_title = "Approximate Lorentzian PSD ~ A/((f-A)^2 + A^2)"
-        plt.title(psd_title)
-        frequencies = np.arange(len(delays) // 2) / dt / len(delays) / 1000
-        psd = np.abs(np.fft.fft(signal)) ** 2 / len(signal) ** 2
-        frequencies_hd = (
-            np.arange(len(high_density_delays) // 2)
-            / dt_hd
-            / len(high_density_delays)
-            / 1000
-        )
-        psd_hd = (
-            np.abs(np.fft.fft(ideal_high_density_signal)) ** 2
-            / len(ideal_high_density_signal) ** 2
-        )
-        plt.plot(
-            frequencies,
-            psd[: len(psd) // 2],
-            label=label,
-            marker=".",
-            linestyle=None,
-            color=next_color,
-        )
-        plt.plot(
-            frequencies_hd,
-            psd_hd[: len(psd_hd) // 2],
-            linestyle="dotted",
-            color=next_color,
-        )
-        plt.ylabel(r"Power Spectral Density, $|\langle {\hat y}\rangle(\omega)|^2$")
-        plt.xlabel(r"Frequency ($\omega$), GHz")
-        plt.xlim([0, frequencies[-1]])
-        plt.legend()
-
-        # Artificial pi/2 pulse preparation and energy basis measurement
-        signal = artificial_data(
-            delays,
-            A * 1000,
-            num_independent_samples=num_reads,
-            theta_d=0.0,
-            theta_s=theta_s,
-            t0=delay_perturbation,
-        )
-        high_density_signal = artificial_data(
-            high_density_delays + delay_perturbation,
-            A * 1000,
-            num_independent_samples=float("Inf"),  # No noise
-            theta_d=0.0,
-            theta_s=theta_s,
-        )
-        fig = plt.figure("Energy basis measurement")
-        plt.title("y=1 - exp(-t/T2) + sampling error")
-        plt.plot(
-            (delays + delay_perturbation) * 1000,
-            signal,
-            label=label,
-            marker=".",
-            linestyle=None,
-            color=next_color,
-        )
-        plt.plot(
-            (high_density_delays + delay_perturbation) * 1000,
-            high_density_signal,
-            linestyle="dotted",
-            color=next_color,
-        )
-        plt.xlabel("Time, nanoseconds")
-        plt.ylabel(r"Magnetization, $\langle y \rangle_{detector}$")
-        plt.legend()
-        plt.tight_layout()
-
-    if save_figures:
-        _save_open_figures("figures/", cache_str)
-    print("Close figures to proceed to next (experimental) stages.")
-    _apply_tight_layout()
-    plt.show()
+    dt = delays[1] - delays[0]
 
     if num_anneal_offset_iterations > 0:
         stage_idx += 1
         print()
+        print(f"Stage {stage_idx}: Anneal offset refinement")
         print(
-            f"Stage {stage_idx}: Estimate anneal offsets required to achieve the target frequency {target_A:.3g}GHz (for all {n_embs} parallel embeddings)."
+            "Collecting data in the interval ~[0, T2] at a rate close to twice the Nyquist frequency. "
+            "This allows the power-spectral density to be estimated in good agreement with a Lorentzian. "
+            "The model target frequency can be approximated from the peak to reasonable precision. "
+            "Methods of higher accuracy are available, for example by exploiting phase information and "
+            "collecting data at higher sampling rates, but this power spectral density method is "
+            "sufficient to resolve discrepancies up to a scale O(0.01GHz) relevant to calibration refinement. "
         )
-        print("offset using a linear model based upon the provided schedule.")
-        if delay_min is None:
-            delay_min = t_decoupled + 1 / (target_A * 1000)  # Ignore first cycle.
-        if delay_min_fit is None:
-            delay_min_fit = delay_min
-        if delay_max is None:
-            delay_max = delay_min + T2
-        if delay_max_fit is None:
-            delay_max_fit = delay_max  # Can be automated for SNR in principle.
-        if not (delay_min <= delay_min_fit < delay_max_fit <= delay_max):
-            raise ValueError("The fit window is incompatible with the data window")
+        print()
+        print(f"Stage {stage_idx}a: Some model data.")
+        print(
+            "In figures, ideal error-free high density data is shown as dashed lines, with (coarsely) sampled "
+            "data intended to mimic some practical experimental limitations."
+        )
+        delay_max_art = T2
+        delay_min_art = 0.0
+        delays_art = np.linspace(
+            delay_min_art,
+            delay_max_art,
+            round((delay_max_art - delay_min_art) * (2 * nyquist_frequency)) + 1,
+            endpoint=True,
+        )
+        dt_art = delays_art[1] - delays_art[0]  # Rounding
 
-        delays = np.linspace(
-            delay_min,
-            delay_max,
-            round((delay_max - delay_min) * nyquist_frequency * 2) + 1,
+        dt_hd = 0.00001  # 0.01 nanoseconds, close to practical limit.
+        high_density_delays = np.linspace(
+            delay_min_art,
+            delay_max_art,
+            round((delay_max_art - delay_min_art) / dt_hd),
+            endpoint=False,
         )
-        dt = delays[1] - delays[0]
+        dt_hd = high_density_delays[1] - high_density_delays[0]  # Rounding
+
+        # theta_s = theta_d = pi/2, other parameters are pertured (should revisit for completeness).
+        # note that the random delay, and random phi_s-phi_d deviations are qualitatively
+        # captured by a single time delay.
+        for A in [target_Aminus, target_A, target_Aplus]:
+            delay_perturbation = 1 / (A * 1000) * np.random.random()
+            T2_perturbed = 0.0101 * (1 + 0.1 * np.random.random())
+            label = f"A={A:.3g}"
+            theta_s = np.pi / 2 * preparation_orientation
+            signal = artificial_data(
+                delays_art + delay_perturbation,
+                A * 1000,
+                num_independent_samples=num_reads,
+                theta_s=theta_s,
+                T2=T2_perturbed,
+            )
+            ideal_high_density_signal = artificial_data(
+                high_density_delays + delay_perturbation,
+                A * 1000,
+                num_independent_samples=float("Inf"),  # No noise
+                theta_s=theta_s,
+            )
+            fig = plt.figure("artificial_timeseries")
+            next_color = fig.gca()._get_lines.get_next_color()
+            plt.title("y=cos(2pi A t)exp(-t/T)+sampling error")
+            plt.plot(
+                (delays_art + delay_perturbation) * 1000,
+                signal,
+                label=label,
+                marker=".",
+                linestyle=None,
+                color=next_color,
+            )
+            plt.plot(
+                (high_density_delays + delay_perturbation) * 1000,
+                ideal_high_density_signal,
+                linestyle="dotted",
+                color=next_color,
+            )
+            plt.xlabel("Time, nanoseconds")
+            plt.ylabel(r"Magnetization, $\langle y \rangle_{detector}$")
+            plt.legend()
+
+            plt.figure("artificial_psd")
+            psd_title = "Approximate Lorentzian PSD ~ A/((f-A)^2 + A^2)"
+            plt.title(psd_title)
+            frequencies = (
+                np.arange(len(delays_art) // 2) / dt_art / len(delays_art) / 1000
+            )
+            psd = np.abs(np.fft.fft(signal)) ** 2 / len(signal) ** 2
+            frequencies_hd = (
+                np.arange(len(high_density_delays) // 2)
+                / dt_hd
+                / len(high_density_delays)
+                / 1000
+            )
+            psd_hd = (
+                np.abs(np.fft.fft(ideal_high_density_signal)) ** 2
+                / len(ideal_high_density_signal) ** 2
+            )
+            plt.plot(
+                frequencies,
+                psd[: len(psd) // 2],
+                label=label,
+                marker=".",
+                linestyle=None,
+                color=next_color,
+            )
+            plt.plot(
+                frequencies_hd,
+                psd_hd[: len(psd_hd) // 2],
+                linestyle="dotted",
+                color=next_color,
+            )
+            plt.ylabel(r"Power Spectral Density, $|\langle {\hat y}\rangle(\omega)|^2$")
+            plt.xlabel(r"Frequency ($\omega$), GHz")
+            plt.xlim([0, frequencies[-1]])
+            plt.legend()
+
+        if save_figures:
+            _save_open_figures("figures/", cache_str)
+        print("Close figures to proceed to next (experimental) stages.")
+        _apply_tight_layout()
+        plt.show()
+
+        print()
+        print(
+            f"Stage {stage_idx}b: Estimate anneal offsets required to achieve the target frequency {target_A:.3g}GHz (for all {n_embs} parallel embeddings)."
+        )
+        print("Anneal offset using a linear model based upon the provided schedule.")
 
         fn_cache = f"cache/AO_It0_{cache_str}.npy"
         if cache_str and os.path.isfile(fn_cache):
@@ -1658,8 +1650,16 @@ def main(
         line_exemplars = {
             line_assignments[emb[0][0]]: idx for idx, emb in enumerate(embs)
         }
-        plt.figure("Timeseries")
-        plt.title("Time series for several qubits using distinct target lines")
+        timeseries_fig, (ax_first_iter_timeseries, ax_second_iter_timeseries) = (
+            plt.subplots(
+                1, 2, figsize=(12, 5), num="Timeseries", constrained_layout=True
+            )
+        )
+        timeseries_fig.suptitle(
+            "Time series for several qubits using distinct target lines"
+        )
+        ax_first_iter_timeseries.set_title("Before anneal-offset refinement")
+        ax_second_iter_timeseries.set_title("After anneal-offset refinement")
         _plot_time_series(
             embs,
             line_assignments,
@@ -1668,17 +1668,36 @@ def main(
             line_color,
             plotted_emb_idxs=line_exemplars.values(),
             label_emb_idxs=line_exemplars.values(),
+            ax=ax_first_iter_timeseries,
         )
-        for colormap_type in ["divergent", "default"]:
-            imshow_data(
-                mean_Z_detector=mean_Z_detector,
-                delays=delays,
-                colormap_type=colormap_type,
-                first=first,
-                last=last,
-            )
-        plt.figure("PSD")
-        plt.title("Power associated with magnetization time series")
+        heatmap_after_axes = {}
+
+        heatmap_fig, (ax_first_iter_heatmap, ax_second_iter_heatmap) = plt.subplots(
+            1,
+            2,
+            figsize=(12, 5),
+            num=f"Timeseries_{colormap_type}_colormap",
+            constrained_layout=True,
+        )
+        heatmap_fig.suptitle(f"Detector magnetization ({colormap_type} colormap)")
+        ax_first_iter_heatmap.set_title("Before anneal-offset refinement")
+        ax_second_iter_heatmap.set_title("After anneal-offset refinement")
+        imshow_data(
+            mean_Z_detector=mean_Z_detector,
+            delays=delays,
+            colormap_type=colormap_type,
+            first=first,
+            last=last,
+            ax=ax_first_iter_heatmap,
+        )
+        heatmap_after_axes[colormap_type] = ax_second_iter_heatmap
+
+        psd_fig, (ax_first_iter_psd, ax_second_iter_psd) = plt.subplots(
+            1, 2, figsize=(12, 5), num="PSD", constrained_layout=True
+        )
+        psd_fig.suptitle("Power associated with magnetization time series")
+        ax_first_iter_psd.set_title("Before anneal-offset refinement")
+        ax_second_iter_psd.set_title("After anneal-offset refinement")
         _plot_time_series(
             embs,
             line_assignments,
@@ -1688,14 +1707,16 @@ def main(
             label_emb_idxs=line_exemplars.values(),
             xlabel=r"Frequency ($\omega$), GHz",
             ylabel=r"Power Spectral Density, $|\langle Z\rangle(\omega)|^2$",
+            ax=ax_first_iter_psd,
         )
-        plt.plot(
+        ax_first_iter_psd.plot(
             [target_A, target_A],
             [0, np.max(psd)],
             color="black",
             linestyle="dashed",
             label="Schedule prediction",
         )
+        ax_first_iter_psd.legend()
 
         # Calculate anneal_offsets for synchronization
         anneal_offsets = y = _calc_anneal_offsets(
@@ -1707,22 +1728,27 @@ def main(
         # variation with the anneal offset.
 
         plt.figure("Proposed anneal_offsets")
-
-        plt.plot(sorted(y), np.arange(len(y)) / len(y))
-        plt.xlabel(
-            f"Proposed anneal offset, RMS(A0)={np.sqrt(np.mean(np.array(y)**2)):.3g}"
+        plt.plot(
+            sorted(y),
+            np.arange(len(y)) / len(y),
+            label=f"RMS(It=1)={np.sqrt(np.mean(np.array(y)**2)):.3g}",
         )
+        plt.xlabel(f"Proposed anneal offset")
         plt.ylabel("Cumulative distribution function")
-        if save_figures:
-            _save_open_figures("figures/", cache_str)
-        print("Close figures to proceed to next (experimental) stages.")
-        _apply_tight_layout()
-        plt.show()
+        plt.legend()
+        if num_anneal_offset_iterations == 1:
+            if save_figures:
+                _save_open_figures("figures/", cache_str)
+            print("Close figures to proceed to next stages.")
+            _apply_tight_layout()
+            plt.show()
 
     if num_anneal_offset_iterations > 1:
-        stage_idx += 1
+        anneal_offsets0 = anneal_offsets
         print()
-        print(f"Stage {stage_idx}: Rerun experiment applying refined anneal offsets.")
+        print(
+            f"Stage {stage_idx}c: Apply second iterative stage (and demonstrate improvements in target_A homogeneity)."
+        )
         fn_cache = f"cache/AO_It1_{cache_str}.npy"
         if cache_str and os.path.isfile(fn_cache):
             mean_Z_detector = np.load(fn_cache)
@@ -1738,15 +1764,29 @@ def main(
             )
             if cache_str:
                 np.save(fn_cache, mean_Z_detector)
-
         psd = np.array(
             [
                 np.abs(np.fft.fft(mean_Z_detector[first:last, i])) ** 2
                 for i in range(len(embs))
             ]
         ) / (last - first)
-        plt.figure("Timeseries_after_anneal_offsets")
-        plt.title("Time series after anneal_offsets")
+        y = anneal_offsets = _calc_anneal_offsets(
+            frequencies, psd, target_A, dAdc
+        )  # Per embedding
+
+        for emb, ao in zip(embs, anneal_offsets):
+            sampling_params["anneal_offsets"][
+                emb[0][0]
+            ] -= ao  # Apply correction to target on each embedding
+
+        plt.figure("Proposed anneal_offsets")
+        plt.plot(
+            sorted(y),
+            np.arange(len(y)) / len(y),
+            label=f"RMS(It=2)={np.sqrt(np.mean(np.array(y)**2)):.3g}",
+        )
+        plt.legend()
+
         _plot_time_series(
             embs,
             line_assignments,
@@ -1755,24 +1795,18 @@ def main(
             line_color,
             plotted_emb_idxs=line_exemplars.values(),
             label_emb_idxs=line_exemplars.values(),
+            ax=ax_second_iter_timeseries,
         )
-        for colormap_type in ["divergent", "default"]:
-            imshow_data(
-                mean_Z_detector=mean_Z_detector,
-                delays=delays,
-                colormap_type=colormap_type,
-                first=first,
-                last=last,
-                context_str="after anneal offsets",
-            )
 
-        plt.figure("PSD_w_AO")
-        plt.title(
-            "The same method is applied in a second iteration (with the estimated anneal offsets in place)."
-            "Provided the linear model holds with dA/dc accurate, we can anticipate the "
-            "peak frequency to converge about the the target value, and with proportionately smaller "
-            "corrections to anneal offsets on this second iteration."
+        imshow_data(
+            mean_Z_detector=mean_Z_detector,
+            delays=delays,
+            colormap_type=colormap_type,
+            first=first,
+            last=last,
+            ax=heatmap_after_axes[colormap_type],
         )
+
         _plot_time_series(
             embs,
             line_assignments,
@@ -1782,21 +1816,18 @@ def main(
             label_emb_idxs=line_exemplars.values(),
             xlabel=r"Frequency ($\omega$), GHz",
             ylabel=r"Power Spectral Density, $|\langle Z\rangle(\omega)|^2$",
+            ax=ax_second_iter_psd,
         )
-        plt.plot(
+        ax_second_iter_psd.plot(
             [target_A, target_A],
             [0, np.max(psd)],
             color="black",
             linestyle="dashed",
             label="Schedule prediction",
         )
-        plt.legend()
+        ax_second_iter_psd.legend()
 
         plt.figure("AnnealOffsets")
-        anneal_offsets0 = anneal_offsets
-        anneal_offsets = _calc_anneal_offsets(
-            frequencies, psd, target_A, dAdc
-        )  # Per embedding
         legend_idxs = set(line_exemplars.values())
         for emb_idx, emb in enumerate(embs):
             q = emb[0][0]
@@ -1822,7 +1853,7 @@ def main(
     _apply_tight_layout()
     plt.show()
     print(
-        "If --loop_length was specified, close figures to proceed to next (experimental) stages: pi/2-pulse propagation."
+        "If --loop_length was specified, close figures to proceed to next stages: pi/2-pulse propagation."
     )
 
     if loop_length:
@@ -1841,7 +1872,7 @@ def main(
         )
         if target_B is not None:
             print(
-                f"Propagation occurs on a time scale  ~ 1/(B(s) |Jtt|) = {1/np.abs(target_B * Jtt)}"
+                f"Propagation occurs on a time scale  ~ 1/(B(s) |Jtt|) = {1/np.abs(target_B * Jtt):.3g}ns"
             )
         sampler_experiment = ParallelEmbeddingComposite(qpu, embeddings=embs_experiment)
         bqm_experiment = dimod.BinaryQuadraticModel("SPIN").from_ising(
@@ -1863,6 +1894,16 @@ def main(
             },
         )  # bqm restricted to decoupled source and target nodes
         fn_cache = f"cache/LoopExperiment_{cache_str}.npy"
+
+        if dt_div_A_final != 0.25:
+            experiment_dt = dt_A_final / A_target / 1000
+            delays = np.linspace(
+                delay_min,
+                delay_max,
+                round((delay_max - delay_min) / experiment_dt) + 1,
+            )
+            dt = delays[1] - delays[0]
+
         if cache_str and os.path.isfile(fn_cache):
             mean_Z_detector = np.load(fn_cache)
         else:
@@ -1876,7 +1917,6 @@ def main(
             if cache_str:
                 np.save(fn_cache, mean_Z_detector)
         square_data = mean_Z_detector.reshape(mean_Z_detector.shape[0], -1)
-
         print(
             "Note: The x-axis is ordered by position on the ring, rather than target line assignment (per earlier plots). "
             "The excitation propagates in two directions (left and right, modulo the periodic boundary condition)"
@@ -1885,7 +1925,6 @@ def main(
             print(
                 f"The plot is divided into {len(embs_experiment)} panels, reflecting independent (decoupled) embeddings that were programmed in parallel"
             )
-
         imshow_data(
             square_data,
             delays=delays,
@@ -1942,6 +1981,14 @@ if __name__ == "__main__":
         type=int,
         nargs="+",
         help="Source lines (one or more integer indices).",
+        default=None,  # First horizontal qubit line under 6-line control
+    )
+    parser.add_argument(
+        "--target-lines",
+        dest="target_lines",
+        type=int,
+        nargs="+",
+        help="Target lines (one or more integer indices).",
         default=None,  # First horizontal qubit line under 6-line control
     )
     parser.add_argument(
@@ -2018,11 +2065,11 @@ if __name__ == "__main__":
         "when target_c is desynchronized).",
     )
     parser.add_argument(
-        "--no-source-decoupling-detection",
-        dest="source_decoupling_detection",
-        action="store_false",
-        default=True,
-        help="Disable detection of the delay required for source decoupling.",
+        "--t-decoupling",
+        dest="t_decoupled",
+        type=float,
+        default=None,
+        help="Delay required on the detector relative to the source in order that the target is decoupled.",
     )
     parser.add_argument(
         "--num_anneal_offset_iterations",
@@ -2063,9 +2110,10 @@ if __name__ == "__main__":
         solver=args.solver_name,
         detector_lines=args.detector_lines,
         source_lines=args.source_lines,
+        target_lines=args.target_lines,
         target_A=args.target_A,
         schedule_fn=args.schedule_fn,
-        source_decoupling_detection=args.source_decoupling_detection,
+        t_decoupled=args.t_decoupled,
         num_anneal_offset_iterations=args.num_anneal_offset_iterations,
         apply_flux_bias_shim=args.apply_flux_bias_shim,
         use_common_c_bounds=args.use_common_c_bounds,
