@@ -315,6 +315,7 @@ class UtilsTestWithoutClient(unittest.TestCase):
             )
             self.assertEqual(x_polarizing_neg[0][1], -1)
             self.assertEqual(x_polarizing_neg[1][1], -1)
+            self.assertEqual(x_polarizing_neg[2][1], 0)
             self.assertEqual(x_polarizing_neg[-1][1], 0)
 
         with self.subTest(scenario="custom_depolarization_time_scale"):
@@ -333,39 +334,92 @@ class UtilsTestWithoutClient(unittest.TestCase):
                 target_times,
             )
 
+    def test_make_tds_x_schedules_empty_lines(self):
+        n_lines = 6  # Must be at least 3.
+        target_c = (random.random() * 100) / 100  # target_c to 2 s.f.
+
+        polarizing_line_info = {'minPolarizingTimeStep': 0.02,
+                                'depolarizationAnnealScheduleRequiredDelay': 2.0}
+        annealing_line_info = [
+            {'annealingLine': i,
+             'minAnnealingTimeStep': 0.01,
+             'holdOvershootFor': 0.02,
+             'minCOvershoot': -7.0,
+             'maxCOvershoot': 8.0,
+             'maxC': 3.0,
+             'minC': -2.0,
+             'scheduleDelayStep': 1e-06,
+             'qubits': list(range(i*100, (i+1)*100))} for i in range(n_lines)]
+        exp_feature_info = [polarizing_line_info, annealing_line_info]
+
+        all_lines = set(range(n_lines))
+        scenarios = {
+            "empty_target_lines": (set(), {0, 1}, {2, 3}),
+            "empty_detector_lines": ({0, 1}, set(), {2, 3}),
+            "empty_source_lines": ({0, 1}, {2, 3}, set()),
+            "all_empty": (set(), set(), set()),
+        }
+        for scenario, (target_lines, detector_lines, source_lines) in scenarios.items():
+            with self.subTest(scenario=scenario):
+                x_anneal_schedules, x_polarizing_schedule = make_tds_x_schedules(
+                    exp_feature_info=exp_feature_info,
+                    target_lines=target_lines,
+                    target_c=target_c,
+                    detector_lines=detector_lines,
+                    source_lines=source_lines,
+                )
+                self.assertEqual(len(x_anneal_schedules), n_lines)
+
     def test_make_tds_intervals(self):
         with self.subTest(scenario="default"):
-            polarized_interval, depolarization_interval, depolarized_interval, quench_time = (
-                make_tds_intervals()
-            )
+            (
+                polarization_interval,
+                polarized_interval,
+                depolarization_interval,
+                depolarized_interval,
+                quench_time,
+            ) = make_tds_intervals()
+            self.assertTupleEqual(polarization_interval, (0.0, 0.0))
             self.assertTupleEqual(polarized_interval, (0.0, 2.0))
             self.assertTupleEqual(depolarization_interval, (4.0, 6.0))
             self.assertTupleEqual(depolarized_interval, (8.0, 10.0))
             self.assertEqual(quench_time, 30.0)
 
         with self.subTest(scenario="custom_parameters"):
-            polarized_interval, depolarization_interval, depolarized_interval, quench_time = (
-                make_tds_intervals(
-                    post_preparation_delay=11.0,
-                    buffering_time_scale=3.0,
-                    depolarizing_time_scale=5.0,
-                    anneal_preparation_time_scale=7.0,
-                )
+            (
+                polarization_interval,
+                polarized_interval,
+                depolarization_interval,
+                depolarized_interval,
+                quench_time,
+            ) = make_tds_intervals(
+                post_preparation_delay=11.0,
+                buffering_time_scale=3.0,
+                depolarizing_time_scale=5.0,
+                anneal_preparation_time_scale=7.0,
+                skip_explicit_polarization=False,
             )
-            self.assertTupleEqual(polarized_interval, (0.0, 7.0))
-            self.assertTupleEqual(depolarization_interval, (10.0, 15.0))
-            self.assertTupleEqual(depolarized_interval, (18.0, 25.0))
-            self.assertEqual(quench_time, 36.0)
+            self.assertTupleEqual(polarization_interval, (0.0, 5.0))
+            self.assertTupleEqual(polarized_interval, (8.0, 15.0))
+            self.assertTupleEqual(depolarization_interval, (18.0, 23.0))
+            self.assertTupleEqual(depolarized_interval, (26.0, 33.0))
+            self.assertEqual(quench_time, 44.0)
 
     def test_make_tds_x_polarizing_schedule(self):
-        schedule = make_tds_x_polarizing_schedule((2.0, 5.0))
-        self.assertListEqual(schedule, [[0.0, 1], [2.0, 1], [5.0, 0]])
+        schedule = make_tds_x_polarizing_schedule((2.0, 5.0), (8.0, 10.0))
+        self.assertListEqual(
+            schedule, [[0.0, 0], [2.0, 0], [5.0, 1], [8.0, 1], [10.0, 0]]
+        )
 
-        schedule_neg = make_tds_x_polarizing_schedule((2.0, 5.0), sign_polarization=-1)
-        self.assertListEqual(schedule_neg, [[0.0, -1], [2.0, -1], [5.0, 0]])
+        schedule_neg = make_tds_x_polarizing_schedule(
+            (2.0, 5.0), (8.0, 10.0), sign_polarization=-1
+        )
+        self.assertListEqual(
+            schedule_neg, [[0.0, 0], [2.0, 0], [5.0, -1], [8.0, -1], [10.0, 0]]
+        )
 
         with self.assertRaises(ValueError):
-            make_tds_x_polarizing_schedule((3.0, 3.0))
+            make_tds_x_polarizing_schedule((3.0, 3.0), (8.0, 10.0))
 
     def test_standardize_schedule_endpoints(self):
         x_anneal = [

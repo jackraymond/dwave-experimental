@@ -184,7 +184,8 @@ def make_tds_intervals(
     *,
     depolarizing_time_scale: None | float = None,
     anneal_preparation_time_scale: None | float = None,
-) -> tuple[Interval, Interval, Interval, float]:
+    skip_explicit_polarization: bool = True,
+) -> tuple[Interval, Interval, Interval, Interval, float]:
     """Make default intervals for schedules construction.
 
     This routine sets up the timescales on which the source (and detector)
@@ -216,9 +217,13 @@ def make_tds_intervals(
             minAnnealingTimeStep annealing-line properties, but typically a
             larger value of order microseconds is desirable for robust
             preparation.
-
+        skip_explicit_polarization: Whether to skip the polarization interval entirely.
+            If False a time interval is specified to characterize teh x_anneal_schedule
+            change from netural [t_1, 0] to polarized (t_p, +/-1), other stages are
+            delayed. If Ture the value (0.0,0.0) is rreturned (a polarized initialization)
+            is assumed. Defaults to True.
     Returns:
-        A 4-tuple containing ``polarized_preparation_interval``,
+        A 5-tuple containing ``polarization_interval``, ``polarized_preparation_interval``,
         ``depolarization_interval``, ``depolarized_preparation_interval``,
         and ``quench_time``.
     """
@@ -228,10 +233,19 @@ def make_tds_intervals(
     if anneal_preparation_time_scale is None:
         anneal_preparation_time_scale = depolarizing_time_scale
 
-    polarized_preparation_interval = (0.0, anneal_preparation_time_scale)
+    if skip_explicit_polarization:
+        polarization_interval = (0.0, 0.0)
+        t0 = 0.0
+    else:
+        polarization_interval = (0.0, 0.0 + depolarizing_time_scale)
+        t0 = polarization_interval[-1] + buffering_time_scale
+
+    polarized_preparation_interval = (t0, t0 + anneal_preparation_time_scale)
     tp = polarized_preparation_interval[-1] + buffering_time_scale
+
     depolarization_interval = (tp, tp + depolarizing_time_scale)
     ts = depolarization_interval[-1] + buffering_time_scale
+
     depolarized_preparation_interval = (
         ts,
         ts + anneal_preparation_time_scale,
@@ -239,6 +253,7 @@ def make_tds_intervals(
     quench_time = depolarized_preparation_interval[-1] + post_preparation_delay
 
     return (
+        polarization_interval,
         polarized_preparation_interval,
         depolarization_interval,
         depolarized_preparation_interval,
@@ -579,9 +594,9 @@ def parse_exp_feature_line_info(
 def make_tds_x_anneal_schedules(
     exp_feature_line_info: list[LineFeatureInfo],
     target_lines: Iterable[int],
-    target_c: float,
     detector_lines: Iterable[int],
     *,
+    target_c: float | None = None,
     polarized_preparation_interval: Interval | None = None,
     depolarized_preparation_interval: Interval | None = None,
     detector_quench_time: float | None = None,
@@ -592,6 +607,7 @@ def make_tds_x_anneal_schedules(
     use_standard_01_c_range: bool = False,
     use_overshoot: bool | dict[str, bool] = True,
     post_pwl_delay: float = 1.0,
+    skip_explicit_polarization: bool = True,
 ) -> XAnnealSchedules:
     """Set annealing schedules for target-detector-source experiments.
 
@@ -622,8 +638,9 @@ def make_tds_x_anneal_schedules(
             dictionaries. Typically the second element of the structure returned
             by :func:`~dwave.experimental.multicolor_anneal.api.get_properties`.
         target_lines: Iterable of target line indices.
-        target_c: Schedule value at which the target is held.
         detector_lines: Iterable of detector line indices.
+        target_c: Schedule value at which the target is held. This must be specified
+            if target_lines is not empty.
         polarized_preparation_interval: Tuple ``(start, end)`` giving the
             interval during which a polarizing signal is present. During this
             interval, unused and detector lines are set to ``minC`` whereas
@@ -662,6 +679,9 @@ def make_tds_x_anneal_schedules(
             ``True``.
         post_pwl_delay: Additional delay, in microseconds, used to extend the
             terminal values of all schedules to a common endpoint.
+        skip_explicit_polarization: Whether to skip the polarization interval
+            entirely when defaulting intervals via :func:`make_tds_intervals`.
+            Defaults to True.
 
     Returns:
         A piecewise linear schedule for all lines.
@@ -686,6 +706,7 @@ def make_tds_x_anneal_schedules(
         ... )            # doctest: +SKIP
     """
     (
+        _,
         polarized_preparation_interval0,
         _,
         depolarized_preparation_interval0,
@@ -735,28 +756,28 @@ def make_tds_x_anneal_schedules(
             raise ValueError(
                 "Must specify polarized_preparation_interval if source_lines is not empty."
             )
-    if polarized_preparation_interval[1] - polarized_preparation_interval[0] < min(
+    if len(target_lines) > 0 and polarized_preparation_interval[
+        1
+    ] - polarized_preparation_interval[0] < min(
         min_time_steps[l] for l in all_lines - target_lines
     ):
         raise ValueError(
             "polarized_preparation_interval must have duration compatible with min step ."
         )
     times += list(polarized_preparation_interval)
-    if not target_lines:
-        raise ValueError("At least one target line must be specified.")
     if not depolarized_preparation_interval:
         depolarized_preparation_interval = polarized_preparation_interval
     else:
         times += list(depolarized_preparation_interval)
 
-    if depolarized_preparation_interval[1] - depolarized_preparation_interval[0] < min(
+    if len(target_lines) > 0 and depolarized_preparation_interval[
+        1
+    ] - depolarized_preparation_interval[0] < min(
         min_time_steps[l] for l in target_lines
     ):
         raise ValueError(
             "depolarized_preparation_interval must have duration compatible with min step ."
         )
-    if not detector_lines:
-        raise ValueError("At least one detector line must be specified.")
     if not source_lines or source_quench_time is None:
         source_quench_time = detector_quench_time
     times.append(min(source_quench_time, detector_quench_time))
@@ -788,6 +809,10 @@ def make_tds_x_anneal_schedules(
     ]
 
     for line in target_lines:
+        if target_c is None:
+            raise ValueError(
+                f"target_c must be specified for target lines {target_lines}"
+            )
         # Turned slowly to target value:
         anneal_schedules[line] = [
             [depolarized_preparation_interval[0], 0.0],
@@ -891,6 +916,7 @@ def make_tds_x_anneal_schedules(
 
 
 def make_tds_x_polarizing_schedule(
+    polarization_interval: Interval | None = None,
     depolarization_interval: Interval | None = None,
     sign_polarization: Literal[-1, 1, 0] = 1,
 ) -> AnnealSchedule:
@@ -900,6 +926,13 @@ def make_tds_x_polarizing_schedule(
     period and then reduced to zero at a given depolarization time.
 
     Args:
+        polarization_interval: Tuple containing the start and end times of
+            the polarization interval, in microseconds. If None, defaults
+            to the ``polarization_interval`` returned by
+            :func:`make_tds_intervals` with default arguments.
+            Not if the zero interval is given, the waveform is specified as 
+            starting in a polarized state (0.0, sign_polarization), rather
+            than progressing from 0 to sign_polarization over the given interval.
         depolarization_interval: Tuple containing the start and end times of
             the depolarization interval, in microseconds. If None, defaults
             to the ``depolarization_interval`` returned by
@@ -907,6 +940,7 @@ def make_tds_x_polarizing_schedule(
         sign_polarization: Sign of the initial polarization, +1 or -1. If 0
             then no polarizing signal is applied, but the interval-wise
             pattern of PWL construction doesnt change.
+
 
     Returns:
         A piecewise-linear polarizing schedule beginning at time 0 with
@@ -924,7 +958,7 @@ def make_tds_x_polarizing_schedule(
         >>> delay = exp_feature_info[0][
         ...     'depolarizationAnnealScheduleRequiredDelay'
         ... ]            # doctest: +SKIP
-        >>> _, depolarization_interval, _, _ = make_tds_intervals(
+        >>> _, _, depolarization_interval, _, _ = make_tds_intervals(
         ...     depolarization_time_scale=delay,
         ... )            # doctest: +SKIP
         >>> x_polarizing_schedule = make_tds_x_polarizing_schedule(
@@ -932,27 +966,49 @@ def make_tds_x_polarizing_schedule(
         ... )            # doctest: +SKIP
     """
     if depolarization_interval is None:
-        _, depolarization_interval, _, _ = make_tds_intervals()
-    elif (
-        len(depolarization_interval) != 2
-        or depolarization_interval[1] - depolarization_interval[0] <= 0
-    ):
-        raise ValueError("depolarization_interval must have a positive duration.")
-    polarizing_schedule = [
-        [0.0, sign_polarization],
+        polarization_interval, _, depolarization_interval, _, _ = make_tds_intervals()
+    elif polarization_interval is not None:
+        if polarization_interval[0] == polarization_interval[1] == 0:
+            intervals = (depolarization_interval,)
+        else:
+            if depolarization_interval[0] <= polarization_interval[1]:
+                raise ValueError(
+                    "polarization_interval must end before depolarization_interval starts."
+                )
+            intervals = (polarization_interval, depolarization_interval)
+        if any(
+            len(interval) != 2 or interval[1] - interval[0] <= 0
+            for interval in intervals
+        ):
+            raise ValueError("intervals must have positive durations.")
+    else:
+        raise ValueError(
+            "Cannot infer depolarization_interval without polarization_interval."
+        )
+    polarizing_schedule = []
+    if polarization_interval[0] != polarization_interval[1]:
+        polarizing_schedule += [
+            [polarization_interval[0], 0],
+            [polarization_interval[1], sign_polarization],
+        ]
+
+    polarizing_schedule += [
         [depolarization_interval[0], sign_polarization],
         [depolarization_interval[1], 0],
     ]
+
+    if polarizing_schedule[0][0] > 0:
+        polarizing_schedule = [[0.0, polarizing_schedule[0][1]]] + polarizing_schedule
     return polarizing_schedule
 
 
 def make_tds_x_schedules(
     exp_feature_info: list[dict, list[LineFeatureInfo]],
     target_lines: Iterable[int],
-    target_c: float,
     detector_lines: Iterable[int],
     source_lines: Iterable[int] = tuple(),
     *,
+    target_c: float | None = None,
     post_preparation_delay: float = 20.0,
     depolarization_time_scale: float = 2.0,
     use_common_bounds: bool = False,
@@ -960,6 +1016,7 @@ def make_tds_x_schedules(
     symmetrize_c_bounds: bool = False,
     use_overshoot: bool | dict[str, bool] = True,
     sign_polarization: Literal[-1, 1] = 1,
+    skip_explicit_polarization: bool = True,
 ) -> tuple[XAnnealSchedules, AnnealSchedule]:
     """Build synchronized anneal and polarizing schedules for TDS experiments.
 
@@ -973,9 +1030,10 @@ def make_tds_x_schedules(
             The first element is a dictionary describing the polarizing line; the second
             element is a list of per-annealing-line dictionaries.
         target_lines: Iterable of target line indices.
-        target_c: Schedule value at which the target is held.
         detector_lines: Iterable of detector line indices.
         source_lines: Iterable of source line indices.
+        target_c: Schedule value at which the target is held. target_c must be specified if
+            target_lines is not empty.
         post_preparation_delay: Delay in microseconds between completion of
             depolarization and start of depolarized target preparation.
         depolarization_time_scale: Time scale for slow (quasi-static)
@@ -1000,6 +1058,9 @@ def make_tds_x_schedules(
             source and detector quenches independently; missing keys default to
             ``True``.
         sign_polarization: Initial sign of the polarizing bias, +1 or -1.
+        skip_explicit_polarization: Whether to skip the polarization interval
+            entirely when constructing intervals via :func:`make_tds_intervals`.
+            Defaults to True.
 
     Returns:
         A tuple ``(x_anneal_schedules, x_polarizing_schedule)`` where
@@ -1014,6 +1075,7 @@ def make_tds_x_schedules(
             validation checks.
     """
     (
+        polarization_interval,
         polarized_preparation_interval,
         depolarization_interval,
         depolarized_preparation_interval,
@@ -1021,6 +1083,7 @@ def make_tds_x_schedules(
     ) = make_tds_intervals(
         post_preparation_delay=post_preparation_delay,
         buffering_time_scale=depolarization_time_scale,
+        skip_explicit_polarization=skip_explicit_polarization,
     )
     x_anneal_schedules = make_tds_x_anneal_schedules(
         exp_feature_line_info=exp_feature_info[1],
@@ -1038,6 +1101,7 @@ def make_tds_x_schedules(
         use_overshoot=use_overshoot,
     )
     x_polarizing_schedule = make_tds_x_polarizing_schedule(
+        polarization_interval=polarization_interval,
         depolarization_interval=depolarization_interval,
         sign_polarization=sign_polarization,
     )
@@ -1072,7 +1136,7 @@ def _target_c_time(
 def make_tds_x_schedule_delays(
     x_anneal_schedules: XAnnealSchedules,
     quenched_lines: Iterable[int],
-    target_c: float,
+    target_c: float | None = None,
     x_schedule_delays: Sequence[float] | None = None,
     decimal_places: int | None = None,
 ) -> Sequence:
@@ -1090,7 +1154,9 @@ def make_tds_x_schedule_delays(
     Args:
         x_anneal_schedules: The list of anneal schedules, one per line.
         quenched_lines: Tuple or set of detector (or source) line indices.
-        target_c: Normalized control bias target value.
+        target_c: Normalized control bias target value (the detector or source)
+           PWL schedule yields time 0.0 at the target_c value, which is set to
+           0.0 if not specified.
         x_schedule_delays: Optional initial schedule delays. If None, initialized to zeros.
 
     Returns:
@@ -1117,6 +1183,8 @@ def make_tds_x_schedule_delays(
         ...     target_c=0.5,
         ... )            # doctest: +SKIP
     """
+    if target_c is None:
+        target_c = 0.0
     if x_schedule_delays is None:
         x_schedule_delays = [0.0] * len(x_anneal_schedules)
     for line in quenched_lines:
