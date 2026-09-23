@@ -395,6 +395,8 @@ def run_parallel_experiment(
         raise ValueError("No multi-color anneal specified")
 
     if detected_vars is None:
+        # Could check line assignment of qubits (should be consistent between
+        # embeddings)
         detected_vars = [
             v for v in bqm.variables if type(v) == tuple and v[0] == "detector"
         ]
@@ -587,10 +589,11 @@ def imshow_data(
             :code:`plt.show(block=plt_show_block)` to display the figure.
         ax: Optional matplotlib axes instance for plotting into an existing figure.
     """
-    fig_title = f"Timeseries_{colormap_type}_colormap{context_str}"
     if colormap_type == "divergent":
+        fig_title = f"det_{context_str}"
         norm, cmap = SymLogNorm(linthresh=linthresh, vmin=-1, vmax=1), "RdBu"
     else:
+        fig_title = f"det_spacetime_{colormap_type}_{context_str}"
         norm, cmap = None, None
     if ax is None:
         ax = plt.figure(fig_title).gca()
@@ -791,6 +794,7 @@ def estimate_decoupling_timescale(
             detected_vars=detected_vars,
         )
         data.append((t_guess, mag[0, :]))
+
         if np.median(mag) * preparation_orientation < threshold_cycle_av:
             t_max = t_guess
             t_guess -= T2
@@ -1200,6 +1204,7 @@ def main(
         use_common_bounds=use_common_c_bounds,
         use_overshoot=use_overshoot,
         sign_polarization=-np.sign(Jts * Jtd * preparation_orientation),
+        # depolarization_time_scale=50.0
     )
     _plot_tds_schedules(
         x_polarizing_schedule,
@@ -1314,6 +1319,9 @@ def main(
         embs = _to_independent_tds(embs_experiment)
     else:
         embs = embs_experiment
+
+    # for emb in embs.values():
+    #    assert all(n[2] == v[0][2] for n,v in emb.items()), "All qubits in an embedding must have the same target index."
     print(
         f"{len(embs)} T-D-S placements were found; each is calibrated with parallelized data collection. "
         "These are ordered by target line for purposes of visualization."
@@ -1342,7 +1350,6 @@ def main(
         print()
         print(f"Stage {stage_idx}: Refine flux_biases")
 
-        x_polarizing_schedule = sampling_params.pop("x_polarizing_schedule")
         fn_cache = f"cache/FB_{cache_str}.npy"
         if cache_str and os.path.isfile(fn_cache):
             with open(fn_cache, "rb") as f:
@@ -1366,7 +1373,7 @@ def main(
                 if line_assignments[n] in detector_lines
             }
             x_polarizing_schedule = sampling_params.pop(
-                "x_polarizing_schedule", None
+                "x_polarizing_schedule"
             )  # Remove polarizing signal
             if flux_biases_method == "Target-Detector":
                 print(

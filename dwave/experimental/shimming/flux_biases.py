@@ -551,7 +551,10 @@ def shim_tds_flux_biases(
     """
     if by_line_pair and (len(target_lines) > 0 or len(detector_lines) > 0):
         # degenerate detector lines interfere post-quench, therefore process separately.
-        flux_biases = sampling_params.pop("flux_biases", None)
+        if sampling_params is not None:
+            flux_biases = sampling_params.pop("flux_biases", None)
+        else:
+            flux_biases = 0
         dict_fb_all = {}
         dict_mag_all = {}
         for target_line in target_lines:
