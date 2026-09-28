@@ -74,7 +74,7 @@ def _round_sigfigs(
 
 def qubit_to_Advantage2_annealing_line(
     n: int | tuple[int, int, int, int, int],
-    shape: tuple[int, ...],
+    shape: tuple[int, ...] | None = None,
     num_lines: int = 6,
 ) -> int:
     """Return the annealing line associated to an Advantage2 qubit
@@ -607,7 +607,6 @@ def make_tds_x_anneal_schedules(
     use_standard_01_c_range: bool = False,
     use_overshoot: bool | dict[str, bool] = True,
     post_pwl_delay: float = 1.0,
-    skip_explicit_polarization: bool = True,
 ) -> XAnnealSchedules:
     """Set annealing schedules for target-detector-source experiments.
 
@@ -679,9 +678,6 @@ def make_tds_x_anneal_schedules(
             ``True``.
         post_pwl_delay: Additional delay, in microseconds, used to extend the
             terminal values of all schedules to a common endpoint.
-        skip_explicit_polarization: Whether to skip the polarization interval
-            entirely when defaulting intervals via :func:`make_tds_intervals`.
-            Defaults to True.
 
     Returns:
         A piecewise linear schedule for all lines.
