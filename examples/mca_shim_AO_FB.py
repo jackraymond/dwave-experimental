@@ -825,7 +825,10 @@ def estimate_decoupling_timescale(
     T2: float = 0.0101,
     threshold_cycle_av: float = 0.9,
     verbose: bool = True,
-) -> tuple[float, list]:
+    by_line: bool = True,
+    line_assignments: dict[int, int] | None = None,
+    source_lines: Iterable[int] | None = None,
+) -> tuple[dict[int, float], list]:
     """Estimate bulk decoupling delay
 
     Source and detector waveforms typically overlap, in order that the detection
@@ -860,86 +863,141 @@ def estimate_decoupling_timescale(
             The half-cycle average (t and t+1/(2*target_A)) magnetization is only larger than
             the threshold, in absolute value, in the source-coupled regime.
         verbose: Whether to print progress information (default: True).
+        by_line: When True (default), resolve a decoupling delay for each
+            detector line independently, reusing sampled data across lines to
+            the extent possible. When False, a single bulk delay is estimated
+            from the median over all detector lines and shared across them.
+        line_assignments: Mapping from qubit to line index. Required when
+            by_line is True to group embeddings by their detector line.
+        source_lines: Iterable of source line indices, ordered so the first is
+            the reference source line. When more than one source line is present
+            (and by_line is True), detector delays are resolved using only the
+            reference-source embeddings, and each additional source line returns a
+            decoupling delay relative to the reference source line.
 
     Returns:
         A tuple containing:
-        - The final t_guess value representing the estimated decoupling timescale.
-        - A list of (t_guess, mag) pairs representing the decoupling timescale search data.
+        - A dict of line index -> delay. Detector lines map to absolute decoupling
+          delays (resolved against the reference source line when several source
+          lines are present). With more than one source line, each source line also
+          maps to a delay relative to the reference source line (reference -> 0.0).
+          With by_line=False a single bulk estimate is repeated for each detector line.
+        - A list of (delay, mag) pairs representing the decoupling timescale search data.
     """
-    if verbose and (t_min is None or t_max is None):
-        print("Estimate bounds O(T1) on decoupling time scale (two programmings)")
-        # Estimate upper and lower bound to precision T1:
+    detector_lines = list(detector_lines)
+    half_cycle = 1 / target_A / 2.0
     data = []
-    while t_min is None or t_max is None:
-        mag = run_parallel_experiment(
-            sampler=sampler,
-            bqm=bqm,
-            sampling_params=sampling_params,
-            delays=[t_guess],
-            detector_lines=detector_lines,
-            detected_vars=detected_vars,
-        )
-        data.append((t_guess, mag[0, :]))
+    cache = {}
 
-        if np.median(mag) * preparation_orientation < threshold_cycle_av:
-            t_max = t_guess
-            t_guess -= T2
-        else:
-            mag_half = mag
+    def _measure(delay):
+        """Sample per-embedding detector magnetization, reusing cached delays."""
+        if delay not in cache:
             mag = run_parallel_experiment(
                 sampler=sampler,
                 bqm=bqm,
                 sampling_params=sampling_params,
-                delays=[t_guess - 1 / target_A / 2.0],
+                delays=[delay],
                 detector_lines=detector_lines,
                 detected_vars=detected_vars,
             )
-            data.append((t_guess - 1 / target_A / 2.0, mag[0, :]))
-            if (
-                preparation_orientation / 2 * (np.median(mag + mag_half))
-                < threshold_cycle_av
-            ):
-                t_max = t_guess - 1 / target_A / 2.0
+            cache[delay] = mag[0, :]
+            data.append((delay, cache[delay]))
+        return cache[delay]
+
+    def _search(vec, t_guess, t_min, t_max):
+        """Bracket, then bisect, the decoupling delay for a magnetization selector."""
+        if verbose and (t_min is None or t_max is None):
+            print("Estimate bounds O(T1) on decoupling time scale (two programmings)")
+        while t_min is None or t_max is None:
+            v = vec(t_guess)
+            if np.median(v) * preparation_orientation < threshold_cycle_av:
+                t_max = t_guess
                 t_guess -= T2
             else:
-                t_min = t_guess
-                t_guess += T2
-    if verbose:
-        print(
-            "Estimate decoupling timescale to accuracy better than 1/target_A, with ~log(T2*target_A) programmings"
-        )
-    while t_max - t_min > 1 / target_A:
-        t_guess = (t_min + t_max) / 2
-        mag = run_parallel_experiment(
-            sampler=sampler,
-            bqm=bqm,
-            sampling_params=sampling_params,
-            delays=[t_guess],
-            detector_lines=detector_lines,
-            detected_vars=detected_vars,
-        )
-        data.append((t_guess, mag[0, :]))
-        if np.median(mag) * preparation_orientation < threshold_cycle_av:
-            t_max = t_guess
-        else:
-            mag_half = mag
-            mag = run_parallel_experiment(
-                sampler=sampler,
-                bqm=bqm,
-                sampling_params=sampling_params,
-                delays=[t_guess - 1 / target_A / 2.0],
-                detector_lines=detector_lines,
-                detected_vars=detected_vars,
+                v_half = vec(t_guess - half_cycle)
+                if (
+                    preparation_orientation / 2 * np.median(v + v_half)
+                    < threshold_cycle_av
+                ):
+                    t_max = t_guess - half_cycle
+                    t_guess -= T2
+                else:
+                    t_min = t_guess
+                    t_guess += T2
+        if verbose:
+            print(
+                "Estimate decoupling timescale to accuracy better than 1/target_A, with ~log(T2*target_A) programmings"
             )
-            data.append((t_guess - 1 / target_A / 2.0, mag[0, :]))
-            if (
-                preparation_orientation / 2 * np.median(mag + mag_half)
-                < threshold_cycle_av
-            ):
-                t_max = t_guess - 1 / target_A / 2.0
+        while t_max - t_min > 1 / target_A:
+            t_guess = (t_min + t_max) / 2
+            v = vec(t_guess)
+            if np.median(v) * preparation_orientation < threshold_cycle_av:
+                t_max = t_guess
             else:
-                t_min = t_guess
-    return t_guess, data
+                v_half = vec(t_guess - half_cycle)
+                if (
+                    preparation_orientation / 2 * np.median(v + v_half)
+                    < threshold_cycle_av
+                ):
+                    t_max = t_guess - half_cycle
+                else:
+                    t_min = t_guess
+        return t_guess
+
+    if not by_line:
+        # Non-default: a single bulk delay from the median over all detector lines.
+        t_bulk = _search(_measure, t_guess, t_min, t_max)
+        return {line: t_bulk for line in detector_lines}, data
+
+    if line_assignments is None:
+        raise ValueError("line_assignments is required when by_line=True")
+    # Column i of each measurement corresponds to sampler.embeddings[i]; map
+    # each embedding to its detector and source line to resolve lines independently.
+    emb_detector_lines = np.array(
+        [line_assignments[emb[("detector", 0)][0]] for emb in sampler.embeddings]
+    )
+    emb_source_lines = np.array(
+        [line_assignments[emb[("source", 0)][0]] for emb in sampler.embeddings]
+    )
+    source_lines = None if source_lines is None else list(source_lines)
+    multi_source = source_lines is not None and len(source_lines) > 1
+    reference_source = source_lines[0] if source_lines else None
+    reference_detector = detector_lines[0]
+
+    def _resolve(mask, context):
+        if not mask.any():
+            raise ValueError(f"No embedding available for {context}")
+        if verbose:
+            print(f"Resolving decoupling delay for {context}")
+        return _search(lambda delay, m=mask: _measure(delay)[m], t_guess, t_min, t_max)
+
+    t_decoupled = {}
+    # Decoupling is relative to the source; resolve detector lines against the
+    # reference source line so returned detector delays share a source baseline.
+    for line in detector_lines:
+        mask = emb_detector_lines == line
+        if multi_source:
+            mask = mask & (emb_source_lines == reference_source)
+        t_decoupled[line] = _resolve(mask, f"detector line {line}")
+
+    if multi_source:
+        # Additional source lines return a delay relative to the reference source
+        # line, measured on the reference detector line.
+        t_reference = t_decoupled[reference_detector]
+        t_decoupled[reference_source] = 0.0
+        for source_line in source_lines[1:]:
+            mask = (emb_detector_lines == reference_detector) & (
+                emb_source_lines == source_line
+            )
+            t_decoupled[source_line] = (
+                t_reference -
+                _resolve(
+                    mask,
+                    f"source line {source_line} on reference detector line {reference_detector}",
+                )
+            )
+
+    return t_decoupled, data
 
 
 def _to_independent_tds(embs):
@@ -1538,11 +1596,11 @@ def main(
             "Larmor precession proceeds from the point where decoupling occurs; "
             "determine this processor- and anneal-schedule-specific value."
         )
-        if len(detector_lines) > 1 or len(source_lines) > 1:
+        if len(source_lines) > 1:
             print(
-                "WARNING: Multiple detector or source lines detected. Delays could vary by line combination. "
-                "A feature to handle this branching is not yet implemented, so the bulk delay calculated might "
-                "be an inappropriate middle ground."
+                "Multiple source lines detected. Detector decoupling delays are resolved using the "
+                "reference (first) source line; each additional source line is assigned a relative "
+                "delay measured on the reference detector line."
             )
 
         fn_cache = f"cache/source_decoupling_{cache_str}.pkl"
@@ -1556,6 +1614,8 @@ def main(
                 sampling_params=sampling_params,
                 detector_lines=detector_lines,
                 target_A=target_A * 1000,
+                line_assignments=line_assignments,
+                source_lines=source_lines,
             )
             if cache_str:
                 with open(fn_cache, "wb") as f:
@@ -1572,25 +1632,36 @@ def main(
         plt.xlabel("Time")
         plt.ylabel("Magnitude")
         plt.title("Source Decoupling Detection")
-        plt.axvline(
-            t_decoupled, color="r", linestyle="--", label="Estimated Decoupling Time"
-        )
+        for line, t in t_decoupled.items():
+            plt.axvline(
+                t,
+                color="r",
+                linestyle="--",
+                label=f"Estimated decoupling delay (line {line})",
+            )
         plt.legend()
         if save_figures:
             _save_open_figures("figures/", cache_str)
         print("Close figures to proceed to next stages.")
         _apply_tight_layout()
+        print('Detected decoupling times by detector line', t_decoupled)
         plt.show()
+    else:
+        # A user-provided scalar delay applies to all detector lines.
+        t_decoupled = {line: t_decoupled for line in detector_lines}
     # Collecting regularly spaced data on the interval [0, T2], post
     # source decoupling, is not optimal for inference of calibration
     # errors, but (IMO) allows intuitive estimators and data series.
     # Nyquist frequency in MHz, resolving up to 2*target_A.
 
     nyquist_frequency = target_A * 1000 * 2
+    for line, val in t_decoupled.items():
+       sampling_params['x_schedule_delays'][line] = val
 
-    delay_min_fit = delay_min = t_decoupled + 1 / (
+    delay_min_fit = delay_min = 1 / (
         target_A * 1000
-    )  # Ignore first cycle.
+    )  # Ignore first cycle, which is subject to transient source interference.
+
     delay_max_fit = delay_max = delay_min + T2
 
     delays = np.linspace(
