@@ -28,6 +28,7 @@ pi/2-pulse initialization (up to limitations of decoherence and control error).
 """
 
 import argparse
+from collections import defaultdict
 import hashlib
 import json
 import os
@@ -56,6 +57,7 @@ from dwave.experimental.multicolor_anneal import (
     SOLVER_FILTER,
 )
 from dwave.experimental.shimming import shim_flux_biases, shim_tds_flux_biases
+
 
 def _make_anneal_schedules(
     exp_feature_info: list,
@@ -522,9 +524,9 @@ def plot_shim(
 
     Args:
         mag_history: the magnetizations estimated throughout the iterative
-            process for every embedding.
+            process for every embedding. One per programming.
         flux_history: the flux_biases assignments throughout the iterative
-            process for every embedding.
+            process for every embedding. One per flux iteration.
         num_experiments: Number of programmings per flux iteration. Using 1
             by default it should be noted that 2 magnetizations may be
             be measured per step in flux_biases.
@@ -644,6 +646,7 @@ def imshow_data(
     context_str: str = "",
     plt_show_block: None | bool = None,
     ax=None,
+    vertical_lines: list[float] | None = None,
 ) -> None:
     """Display detector magnetization data as a heatmap.
 
@@ -666,6 +669,7 @@ def imshow_data(
         plt_show_block: If not None (default), then execute
             :code:`plt.show(block=plt_show_block)` to display the figure.
         ax: Optional matplotlib axes instance for plotting into an existing figure.
+        vertical_lines: lines at which to draw vertical lines
     """
     if colormap_type == "divergent":
         fig_title = f"det_{context_str}"
@@ -695,6 +699,10 @@ def imshow_data(
     )
     ax.set_xlabel("Target-Detector-Source embedding")
     ax.set_ylabel("Delay, nanoseconds")
+    if vertical_lines is not None:
+        # plt.vlines(x=line_x, ymin=-0.5, ymax=rows - 0.5, colors="black", linewidth=1.5)
+        for x in vertical_lines:
+            ax.axvline(x=x, color="black", linewidth=1.5)
     _apply_tight_layout()
     if plt_show_block is not None:
         plt.show(block=plt_show_block)
@@ -785,9 +793,9 @@ def _plot_time_series(
         line_idx = line_assignments[q]
         if emb_idx in label_emb_idxs:
             if len(label_emb_idxs) == len(plotted_emb_idxs):
-                label = f"line {line_idx}(qubit {q})"
+                label = f"tar-line {line_idx}(qubit {q})"
             else:
-                label = f"line {line_idx}"
+                label = f"tar-line {line_idx}"
         else:
             label = None
         if line_color is not None:
@@ -1392,7 +1400,7 @@ def main(
     if loop_length is not None:
         print(
             f"{len(embs_experiment)} independent length-{loop_length} target loops were found, where each target qubit is connected to both a source and a detector. "
-            f"In the calibration refinement stages these are treated as {len(embs_experiment)}x{loop_length} independent S-D-T systems."
+            f"In the calibration refinement stages these are treated as {len(embs_experiment)}x{loop_length} independent T-D-S systems."
         )
         embs = _to_independent_tds(embs_experiment)
     else:
@@ -1402,14 +1410,22 @@ def main(
     #    assert all(n[2] == v[0][2] for n,v in emb.items()), "All qubits in an embedding must have the same target index."
     print(
         f"{len(embs)} T-D-S placements were found; each is calibrated with parallelized data collection. "
-        "These are ordered by target line for purposes of visualization."
+        "These are ordered by (target line, detector line, source line) for purposes of visualization."
+        "For time series plots an exemplar is plotted to capture each line combination. "
     )
-    embs_by_line = {i: [] for i in target_lines}
-    for i, emb in enumerate(embs):
-        q = emb[0][0]
-        embs_by_line[line_assignments[q]].append(emb)
+    embs_by_line = defaultdict(list)
+    for _, emb in enumerate(embs):
 
-    embs = [emb for i in target_lines for emb in embs_by_line[i]]
+        embs_by_line[tuple(line_assignments[c[0]] for c in emb.values())].append(emb)
+
+    embs = [emb for key in sorted(embs_by_line) for emb in embs_by_line[key]]
+    sum_by_line = {key: len(embs_by_line[key]) for key in sorted(embs_by_line)}
+    cumsum_by_line = {
+        key: sum(sum_by_line[k] for k in sorted(sum_by_line) if k <= key)
+        for key in sorted(sum_by_line)
+    }
+    line_exemplars = {key: cumsum_by_line[key] - 1 for key in embs_by_line}
+    print("Number of embeddings by t-d-s line combination:", sum_by_line)
     n_embs = len(embs)
 
     sampler = ParallelEmbeddingComposite(qpu, embeddings=embs)
@@ -1565,17 +1581,18 @@ def main(
         print("Close figures to proceed to next stages.")
         _apply_tight_layout()
         plt.show()
-
     # Collecting regularly spaced data on the interval [0, T2], post
     # source decoupling, is not optimal for inference of calibration
     # errors, but (IMO) allows intuitive estimators and data series.
     # Nyquist frequency in MHz, resolving up to 2*target_A.
+
     nyquist_frequency = target_A * 1000 * 2
 
     delay_min_fit = delay_min = t_decoupled + 1 / (
         target_A * 1000
     )  # Ignore first cycle.
     delay_max_fit = delay_max = delay_min + T2
+
     delays = np.linspace(
         delay_min,
         delay_max,
@@ -1738,9 +1755,6 @@ def main(
         ) / (last - first)
 
         # Plot data #
-        line_exemplars = {
-            line_assignments[emb[0][0]]: idx for idx, emb in enumerate(embs)
-        }
         timeseries_fig, (ax_first_iter_timeseries, ax_second_iter_timeseries) = (
             plt.subplots(
                 1, 2, figsize=(12, 5), num="Timeseries", constrained_layout=True
@@ -1780,6 +1794,7 @@ def main(
             first=first,
             last=last,
             ax=ax_first_iter_heatmap,
+            vertical_lines=[v - 0.5 for v in cumsum_by_line.values()],
         )
         heatmap_after_axes[colormap_type] = ax_second_iter_heatmap
 
@@ -1896,6 +1911,7 @@ def main(
             first=first,
             last=last,
             ax=heatmap_after_axes[colormap_type],
+            vertical_lines=[v - 0.5 for v in cumsum_by_line.values()],
         )
 
         _plot_time_series(
@@ -1938,7 +1954,10 @@ def main(
         plt.ylabel("Estimated anneal-offset correction (after refinement)")
         plt.grid(True)
         plt.legend()
-
+    print(
+        f"The plot is divided into {len(cumsum_by_line)} ordered panels, each T-D-S line combination programmed in parallel."
+        "Variation of T variation can impact frequency, whereas D and S variation impacts synchronization (delay)."
+    )
     if save_figures:
         _save_open_figures("figures", cache_str)
     _apply_tight_layout()
@@ -1987,7 +2006,7 @@ def main(
         fn_cache = f"cache/LoopExperiment_{cache_str}.npy"
 
         if dt_div_A_final != 0.25:
-            experiment_dt = dt_A_final / A_target / 1000
+            experiment_dt = dt_div_A_final / target_A / 1000
             delays = np.linspace(
                 delay_min,
                 delay_max,
@@ -2014,17 +2033,16 @@ def main(
         )
         if len(embs_experiment) > 1:
             print(
-                f"The plot is divided into {len(embs_experiment)} panels, reflecting independent (decoupled) embeddings that were programmed in parallel"
+                f"The plot is divided into {len(embs_experiment)} panels, reflecting independent (decoupled) rings that were programmed in parallel"
             )
+        cols = square_data.shape[1]
+        line_x = np.arange(0.5 + loop_length, cols - 0.5, loop_length)
         imshow_data(
             square_data,
             delays=delays,
             context_str=f"coupled loop length={loop_length}",
+            vertical_lines=line_x,
         )
-        ax = plt.gca()
-        rows, cols = square_data.shape
-        line_x = np.arange(0.5 + loop_length, cols - 0.5, loop_length)
-        ax.vlines(x=line_x, ymin=-0.5, ymax=rows - 0.5, colors="black", linewidth=1.5)
         plt.title(
             f"{len(embs_experiment)} target loops of length {loop_length}, each with pi/2-pulse at origin."
         )

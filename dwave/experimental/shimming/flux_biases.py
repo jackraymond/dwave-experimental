@@ -549,7 +549,8 @@ def shim_tds_flux_biases(
         3.  History of magnetizations per variable across experiments
             and iterations.
     """
-    if by_line_pair and (len(target_lines) > 0 or len(detector_lines) > 0):
+
+    if by_line_pair and (len(target_lines) > 0 and len(detector_lines) > 0):
         # degenerate detector lines interfere post-quench, therefore process separately.
         if sampling_params is not None:
             flux_biases = sampling_params.pop("flux_biases", None)
@@ -583,22 +584,25 @@ def shim_tds_flux_biases(
                 dict_fb_all.update(dict_fb)
                 dict_mag_all.update(dict_mag)
         return flux_biases, dict_fb_all, dict_mag_all
+    elif not detector_lines:
+        raise ValueError(
+            "There must be detector lines to shim, but detector_lines is empty"
+        )
     num_lines = (
         len(sampling_params["x_anneal_schedules"])
         if exp_feature_line_info is None
         else len(exp_feature_line_info)
     )
-    if any(
-        len(lines) < 1 or not all(0 <= l < num_lines for l in lines)
-        for lines in [target_lines, detector_lines]
+    dt_lines = set(target_lines) | set(detector_lines)
+    if not (
+        dt_lines.issubset(range(num_lines))
+        and len(dt_lines) == len(target_lines) + len(detector_lines)
     ):
         raise ValueError(
-            "target_lines and detector_lines should be a non-empty iterable of line indices"
+            "target_lines and detector_lines should be a non-empty disjoint integer line indices"
         )
     viable_shimmed_variables = set(
-        v
-        for v in bqm.variables
-        if line_assignments[v] in (detector_lines | target_lines)
+        v for v in bqm.variables if line_assignments[v] in dt_lines
     )
     if shimmed_variables is None:
         shimmed_variables = viable_shimmed_variables
@@ -684,7 +688,6 @@ def shim_tds_flux_biases(
         # Simple shim of detectors
         sampling_params_updates = None
         exp_weights_per_update = None
-
     return shim_flux_biases(
         bqm,
         sampler,
