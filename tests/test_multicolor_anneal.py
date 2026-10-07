@@ -23,7 +23,8 @@ from dwave.system.testing import MockDWaveSampler
 from dwave.experimental.multicolor_anneal import (
     get_properties, get_solver_name, SOLVER_FILTER,
     qubit_to_Advantage2_annealing_line, make_tds_graph,
-    make_tds_intervals, make_tds_x_polarizing_schedule,
+    make_tds_intervals, make_tds_x_anneal_schedules,
+    make_tds_x_polarizing_schedule,
     make_tds_x_schedule_delays, make_tds_x_schedules,
     standardize_schedule_endpoints,
 )
@@ -176,6 +177,11 @@ class UtilsTestWithoutClient(unittest.TestCase):
             assignments[test_node],
             qubit_to_Advantage2_annealing_line(test_nodeC, shape),
             "Coordinates are handled correctly",
+        )
+        self.assertEqual(
+            qubit_to_Advantage2_annealing_line(test_nodeC),
+            qubit_to_Advantage2_annealing_line(test_nodeC, shape),
+            "shape is optional when a Zephyr coordinate tuple is given",
         )
 
     def test_tds_graph(self):
@@ -333,6 +339,97 @@ class UtilsTestWithoutClient(unittest.TestCase):
                 [0.0, 2 * depolarization_time_scale, 3 * depolarization_time_scale],
                 target_times,
             )
+
+    @staticmethod
+    def _annealing_line_info(n_lines, min_step=0.01, minC=-2.0, maxC=3.0):
+        return [
+            {'annealingLine': i,
+             'minAnnealingTimeStep': min_step,
+             'holdOvershootFor': 0.02,
+             'minCOvershoot': -7.0,
+             'maxCOvershoot': 8.0,
+             'maxC': maxC,
+             'minC': minC,
+             'scheduleDelayStep': 1e-06,
+             'qubits': list(range(i * 100, (i + 1) * 100))} for i in range(n_lines)]
+
+    def test_make_tds_x_anneal_schedules_defaults(self):
+        n_lines = 4
+        minC = -2.0
+        annealing_line_info = self._annealing_line_info(n_lines, minC=minC)
+
+        # Default operation: target_lines and detector_lines now default to
+        # empty, so only exp_feature_line_info is required.
+        x_anneal_schedules = make_tds_x_anneal_schedules(annealing_line_info)
+        self.assertEqual(len(x_anneal_schedules), n_lines)
+        end_time = x_anneal_schedules[0][-1][0]
+        for schedule in x_anneal_schedules:
+            self.assertEqual(schedule[0], [0.0, 0.0])
+            # All schedules share a common, aligned endpoint.
+            self.assertEqual(schedule[-1][0], end_time)
+            # Unassigned lines are prepared to minC and then held.
+            self.assertTrue(all(c in (0.0, minC) for _, c in schedule))
+
+        # Roles can still be assigned explicitly.
+        target_c = 0.5
+        x_anneal_schedules = make_tds_x_anneal_schedules(
+            annealing_line_info,
+            target_lines={0},
+            detector_lines={1},
+            source_lines={2},
+            target_c=target_c,
+        )
+        self.assertIn(target_c, [c for _, c in x_anneal_schedules[0]])
+
+    def test_make_tds_x_anneal_schedules_quench_step_sizes(self):
+        n_lines = 3
+        min_step = 0.01
+        minC, maxC = -2.0, 3.0
+        annealing_line_info = self._annealing_line_info(
+            n_lines, min_step=min_step, minC=minC, maxC=maxC
+        )
+
+        def detector_quench_gap(schedule):
+            # Time between the detector reaching minC and then maxC at quench.
+            for (t0, c0), (t1, c1) in zip(schedule, schedule[1:]):
+                if c0 == minC and c1 == maxC:
+                    return t1 - t0
+            raise AssertionError("No detector quench step found")
+
+        with self.subTest(scenario="default_step"):
+            # The default quench step equals the per-line minimum time step.
+            schedule = make_tds_x_anneal_schedules(
+                annealing_line_info, detector_lines={0}, use_overshoot=False
+            )
+            self.assertAlmostEqual(detector_quench_gap(schedule[0]), min_step)
+
+        with self.subTest(scenario="scalar"):
+            # A scalar is applied to all lines.
+            schedule = make_tds_x_anneal_schedules(
+                annealing_line_info,
+                detector_lines={0},
+                use_overshoot=False,
+                quench_step_sizes=0.05,
+            )
+            self.assertAlmostEqual(detector_quench_gap(schedule[0]), 0.05)
+
+        with self.subTest(scenario="per_line_dict"):
+            schedule = make_tds_x_anneal_schedules(
+                annealing_line_info,
+                detector_lines={0},
+                use_overshoot=False,
+                quench_step_sizes={line: 0.05 for line in range(n_lines)},
+            )
+            self.assertAlmostEqual(detector_quench_gap(schedule[0]), 0.05)
+
+        with self.subTest(scenario="below_min_step_rejected"):
+            with self.assertRaises(ValueError):
+                make_tds_x_anneal_schedules(
+                    annealing_line_info,
+                    detector_lines={0},
+                    use_overshoot=False,
+                    quench_step_sizes=min_step / 2,
+                )
 
     def test_make_tds_x_schedules_empty_lines(self):
         n_lines = 6  # Must be at least 3.
