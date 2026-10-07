@@ -593,8 +593,8 @@ def parse_exp_feature_line_info(
 
 def make_tds_x_anneal_schedules(
     exp_feature_line_info: list[LineFeatureInfo],
-    target_lines: Iterable[int],
-    detector_lines: Iterable[int],
+    target_lines: Iterable[int] = tuple(),
+    detector_lines: Iterable[int] = tuple(),
     *,
     target_c: float | None = None,
     polarized_preparation_interval: Interval | None = None,
@@ -607,6 +607,7 @@ def make_tds_x_anneal_schedules(
     use_standard_01_c_range: bool = False,
     use_overshoot: bool | dict[str, bool] = True,
     post_pwl_delay: float = 1.0,
+    quench_step_sizes: float | dict[int, float] | None = None,
 ) -> XAnnealSchedules:
     """Set annealing schedules for target-detector-source experiments.
 
@@ -678,6 +679,10 @@ def make_tds_x_anneal_schedules(
             ``True``.
         post_pwl_delay: Additional delay, in microseconds, used to extend the
             terminal values of all schedules to a common endpoint.
+        quench_step_sizes: Time in microseconds for detector or source quench.
+            Specified as a dictionary (one per line) or a single value applied
+            to all lines. Defaults to min step size permissable
+            according to exp_feature_info by line.
 
     Returns:
         A piecewise linear schedule for all lines.
@@ -815,6 +820,15 @@ def make_tds_x_anneal_schedules(
             [depolarized_preparation_interval[1], target_c],
         ]
 
+    if quench_step_sizes is not None:
+        if not isinstance(quench_step_sizes, dict):
+            quench_step_sizes = {line: quench_step_sizes for line in all_lines}
+        if any(quench_step_sizes[line] < min_time_steps[line] for line in all_lines):
+            raise ValueError(
+                "Quench step sizes must be at least the minimum time step for each line."
+            )
+        min_time_steps = quench_step_sizes
+
     for line in source_lines:
         if use_overshoot_source:
             if holdOvershootFors[line] > 2 * min_time_steps[line]:
@@ -926,7 +940,7 @@ def make_tds_x_polarizing_schedule(
             the polarization interval, in microseconds. If None, defaults
             to the ``polarization_interval`` returned by
             :func:`make_tds_intervals` with default arguments.
-            Not if the zero interval is given, the waveform is specified as 
+            Not if the zero interval is given, the waveform is specified as
             starting in a polarized state (0.0, sign_polarization), rather
             than progressing from 0 to sign_polarization over the given interval.
         depolarization_interval: Tuple containing the start and end times of

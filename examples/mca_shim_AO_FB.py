@@ -56,7 +56,7 @@ from dwave.experimental.multicolor_anneal import (
     #   make_tds_x_schedule_delays,
     SOLVER_FILTER,
 )
-from dwave.experimental.shimming import shim_flux_biases, shim_tds_flux_biases
+from dwave.experimental.shimming import shim_tds_flux_biases
 
 
 def _make_anneal_schedules(
@@ -680,7 +680,8 @@ def imshow_data(
     if ax is None:
         ax = plt.figure(fig_title).gca()
         ax.set_title(f"Real-space magnetization {context_str}".strip())
-    ax.imshow(mean_Z_detector, norm=norm, cmap=cmap)
+    # aspect="auto" lets axes fill their allotted cell so inter-subplot spacing survives resizing.
+    ax.imshow(mean_Z_detector, norm=norm, cmap=cmap, aspect="auto")
     if last is None:
         last = mean_Z_detector.shape[0]
     yticks_dict = {
@@ -825,7 +826,7 @@ def estimate_decoupling_timescale(
     T2: float = 0.0101,
     threshold_cycle_av: float = 0.9,
     verbose: bool = True,
-    by_line: bool = True,
+    by_det_src_pair: bool = True,
     line_assignments: dict[int, int] | None = None,
     source_lines: Iterable[int] | None = None,
 ) -> tuple[dict[int, float], list]:
@@ -863,15 +864,15 @@ def estimate_decoupling_timescale(
             The half-cycle average (t and t+1/(2*target_A)) magnetization is only larger than
             the threshold, in absolute value, in the source-coupled regime.
         verbose: Whether to print progress information (default: True).
-        by_line: When True (default), resolve a decoupling delay for each
+        by_det_src_pair: When True (default), resolve a decoupling delay for each
             detector line independently, reusing sampled data across lines to
             the extent possible. When False, a single bulk delay is estimated
             from the median over all detector lines and shared across them.
         line_assignments: Mapping from qubit to line index. Required when
-            by_line is True to group embeddings by their detector line.
+            by_det_src_pair is True to group embeddings by their detector line.
         source_lines: Iterable of source line indices, ordered so the first is
             the reference source line. When more than one source line is present
-            (and by_line is True), detector delays are resolved using only the
+            (and by_det_src_pair is True), detector delays are resolved using only the
             reference-source embeddings, and each additional source line returns a
             decoupling delay relative to the reference source line.
 
@@ -881,7 +882,7 @@ def estimate_decoupling_timescale(
           delays (resolved against the reference source line when several source
           lines are present). With more than one source line, each source line also
           maps to a delay relative to the reference source line (reference -> 0.0).
-          With by_line=False a single bulk estimate is repeated for each detector line.
+          With by_det_src_pair=False a single bulk estimate is repeated for each detector line.
         - A list of (delay, mag) pairs representing the decoupling timescale search data.
     """
     detector_lines = list(detector_lines)
@@ -944,13 +945,13 @@ def estimate_decoupling_timescale(
                     t_min = t_guess
         return t_guess
 
-    if not by_line:
+    if not by_det_src_pair:
         # Non-default: a single bulk delay from the median over all detector lines.
         t_bulk = _search(_measure, t_guess, t_min, t_max)
         return {line: t_bulk for line in detector_lines}, data
 
     if line_assignments is None:
-        raise ValueError("line_assignments is required when by_line=True")
+        raise ValueError("line_assignments is required when by_det_src_pair=True")
     # Column i of each measurement corresponds to sampler.embeddings[i]; map
     # each embedding to its detector and source line to resolve lines independently.
     emb_detector_lines = np.array(
@@ -1027,8 +1028,9 @@ def main(
     target_A: float | None = None,
     target_B: float | None = None,
     dAdc: float | None = None,
-    flux_biases_method: Literal["None", "Detector", "Target-Detector"] = "Detector",
+    td_shim_type: Literal["None", "alternating", "detector_only", "sequential"] = "detector_only",
     t_decoupled: float | None = None,
+    by_det_src_pair: bool = True,
     num_anneal_offset_iterations: int = 2,
     schedule_fn: str = "09-1323A-D_Advantage2_system4_annealing_schedule.xlsx",
     num_reads: int = 500,
@@ -1098,7 +1100,7 @@ def main(
             Approximate rate of change of A(c) with the normalized control bias c
             near target_c (GHz per unit c), used to convert a frequency discrepancy
             into an anneal offset. If None, it is estimated from the schedule file.
-        flux_biases_method:
+        td_shim_type:
             When set to "None", flux_biases are not modified. When "Detector",
             flux_biases are modified on detector qubits to achieve zero expected
             magnetization at long delay. When "Target-Detector", flux_biases are
@@ -1482,7 +1484,7 @@ def main(
         key: sum(sum_by_line[k] for k in sorted(sum_by_line) if k <= key)
         for key in sorted(sum_by_line)
     }
-    line_exemplars = {key: cumsum_by_line[key] - 1 for key in embs_by_line}
+    line_exemplars = {key[0]: cumsum_by_line[key] - 1 for key in embs_by_line}
     print("Number of embeddings by t-d-s line combination:", sum_by_line)
     n_embs = len(embs)
 
@@ -1497,7 +1499,7 @@ def main(
         {n: 0 for n in S.nodes() if Snode_to_tds[n] != "source"},
         {e: Jtd for e in S.edges() if any(Snode_to_tds[v] == "detector" for v in e)},
     )  # Relevant to flux shimmi
-    if flux_biases_method != "None":
+    if td_shim_type != "None":
         stage_idx += 1
         print()
         print(f"Stage {stage_idx}: Refine flux_biases")
@@ -1509,52 +1511,33 @@ def main(
         else:
             if not online:
                 raise RuntimeError("QPU not available, and no cached data found.")
-            # Require zero magnetization in the limit of long delay (where
-            # source impact has decayed away.
             bqm_embedded = dimod.BinaryQuadraticModel("SPIN").from_ising(
-                {emb[n][0]: h for emb in embs for n, h in bqm_td.linear.items()},
-                {
-                    tuple(emb[n][0] for n in e): J
-                    for emb in embs
-                    for e, J in bqm_td.quadratic.items()
-                },
-            )
-            shimmed_variables = {
-                n
-                for n in bqm_embedded.variables
-                if line_assignments[n] in detector_lines
-            }
-            x_polarizing_schedule = sampling_params.pop(
-                "x_polarizing_schedule"
-            )  # Remove polarizing signal
-            if flux_biases_method == "Target-Detector":
-                print(
-                    "Refine target and detector flux_biases for unbiased target and detector "
-                    "qubits at equilibrium with sources decoupled and depolarized."
-                )
-
-                flux_biases, flux_history, mag_history = shim_tds_flux_biases(
+                            {emb[n][0]: h for emb in embs for n, h in bqm_td.linear.items()},
+                            {
+                                tuple(emb[n][0] for n in e): J
+                                for emb in embs
+                                for e, J in bqm_td.quadratic.items()
+                            },
+                        )  # DEBUG - no longer required bqm_td restriction.
+            bqm_embedded = dimod.BinaryQuadraticModel("SPIN").from_ising(
+                            {emb[n][0]: h for emb in embs for n, h in bqm.linear.items()},
+                            {
+                                tuple(emb[n][0] for n in e): J
+                                for emb in embs
+                                for e, J in bqm.quadratic.items()
+                            },
+                        )  # DEBUG - no longer required bqm_td restriction.
+            flux_biases, flux_history, mag_history = shim_tds_flux_biases(
                     bqm=bqm_embedded,
                     sampler=qpu,
                     sampling_params=sampling_params,
                     target_lines=set(target_lines),
                     detector_lines=set(detector_lines),
                     line_assignments=line_assignments,
+                    td_shim_type=td_shim_type,
+                    exp_feature_line_info=exp_feature_info[1],
+                    source_lines=set(source_lines)
                 )
-            elif flux_biases_method == "Detector":
-                print(
-                    "Refine detector flux_biases for unbiased detector magnetization with"
-                    " sources decoupled and depolarized."
-                )
-                flux_biases, flux_history, mag_history = shim_flux_biases(
-                    bqm=bqm_embedded,
-                    sampler=qpu,
-                    sampling_params=sampling_params,
-                    shimmed_variables=shimmed_variables,
-                )
-            else:
-                raise ValueError("Unknown method")
-
             polarization_candidates = [
                 (i, flux_biases[i])
                 for i in range(len(flux_biases))
@@ -1567,9 +1550,6 @@ def main(
                     "for evidence of polarization and report bad qubits."
                 )
                 print(polarization_candidates)
-
-            if x_polarizing_schedule is not None:
-                sampling_params["x_polarizing_schedule"] = x_polarizing_schedule
             if cache_str:
                 with open(fn_cache, "wb") as f:
                     pickle.dump((flux_biases, flux_history, mag_history), f)
@@ -1616,6 +1596,7 @@ def main(
                 target_A=target_A * 1000,
                 line_assignments=line_assignments,
                 source_lines=source_lines,
+                by_det_src_pair=by_det_src_pair,
             )
             if cache_str:
                 with open(fn_cache, "wb") as f:
@@ -1644,7 +1625,7 @@ def main(
             _save_open_figures("figures/", cache_str)
         print("Close figures to proceed to next stages.")
         _apply_tight_layout()
-        print('Detected decoupling times by detector line', t_decoupled)
+        print('Detected decoupling times by detector line (or relative offset required on source line)', t_decoupled)
         plt.show()
     else:
         # A user-provided scalar delay applies to all detector lines.
@@ -1849,12 +1830,14 @@ def main(
         heatmap_after_axes = {}
 
         heatmap_fig, (ax_first_iter_heatmap, ax_second_iter_heatmap) = plt.subplots(
-            1,
             2,
-            figsize=(12, 5),
+            1,
+            figsize=(8, 10),
             num=f"Timeseries_{colormap_type}_colormap",
             constrained_layout=True,
         )
+        # Add vertical padding so each subplot title stays legible.
+        heatmap_fig.get_layout_engine().set(hspace=0.15)
         heatmap_fig.suptitle(f"Detector magnetization ({colormap_type} colormap)")
         ax_first_iter_heatmap.set_title("Before anneal-offset refinement")
         ax_second_iter_heatmap.set_title("After anneal-offset refinement")
@@ -2236,13 +2219,13 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--flux-bias-method",
-        dest="flux_biases_method",
+        dest="td_shim_type",
         type=str,
-        choices=["None", "Detector", "Target-Detector"],
-        default="Detector",
+        choices=["None", "detector_only", "alternating", "sequential", 'by_line_quench'],
+        default="detector_only",
         help="Flux-bias calibration refinement mode: 'None' disables calibration refinement; "
-        "'Detector' refines detector qubit flux_biases to achieve zero measured magnetization; "
-        "'Target-Detector' alternates detector/target roles to refine detector and target flux_biases "
+        "'detector_only' refines detector qubit flux_biases to achieve zero measured magnetization; "
+        "'alternating' alternates detector/target roles to refine detector and target flux_biases "
         " (this can cause divergences, particularly at small frequencies and "
         "when target_c is desynchronized).",
     )
@@ -2252,6 +2235,16 @@ if __name__ == "__main__":
         type=float,
         default=None,
         help="Delay required on the detector relative to the source in order that the target is decoupled.",
+    )
+    parser.add_argument(
+        "--delay-by-det-src-pair",
+        dest="by_det_src_pair",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Resolve source-decoupling delays independently per detector/source line pair "
+        "(default). Use --no-delay-by-det-src-pair to estimate a single bulk delay shared "
+        "across all lines. This setting has no impact if only "
+        "one source and one detector line is present."
     )
     parser.add_argument(
         "--num_anneal_offset_iterations",
@@ -2296,8 +2289,9 @@ if __name__ == "__main__":
         target_A=args.target_A,
         schedule_fn=args.schedule_fn,
         t_decoupled=args.t_decoupled,
+        by_det_src_pair=args.by_det_src_pair,
         num_anneal_offset_iterations=args.num_anneal_offset_iterations,
-        flux_biases_method=args.flux_biases_method,
+        td_shim_type=args.td_shim_type,
         use_common_c_bounds=args.use_common_c_bounds,
         use_overshoot=args.use_overshoot,
         save_figures=args.save_figures,
@@ -2305,4 +2299,5 @@ if __name__ == "__main__":
         Jtd=args.Jtd,
         Jtt=args.Jtt,
         loop_length=args.loop_length,
+        max_num_embeddings=args.max_num_embeddings,
     )
