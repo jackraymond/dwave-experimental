@@ -48,7 +48,7 @@ def qubit_freezeout_alpha_phi(
     variance, :math:`\Delta_1`, and a standard sampling-based estimator with
     variance :math:`\Delta_2 = \frac{1}{\text{num_reads}}`. You can then
     determine an update to the flux, :math:`\Phi = l <s_i>_{\text{data}}`, where
-    the learning rate :math:`l = T \frac{\Delta_1}{Delta_1 + Delta_2}`. This
+    the learning rate :math:`l = T \frac{\Delta_1}{\Delta_1 + \Delta_2}`. This
     update is optimal in the sense that it minimizes the expected square
     magnetization.
 
@@ -61,7 +61,7 @@ def qubit_freezeout_alpha_phi(
 
     Args:
         eff_temp_phi:
-            Effective (unitless) inverse temperature at freezeout. This
+            Effective (unitless) temperature at freezeout. This
             can be determined from current device parameters.
         flux_associated_variance:
             The expected variance of the magnetization (:math:`m`) due to flux
@@ -170,7 +170,7 @@ def shim_flux_biases(
             :class:`~dwave.system.samplers.DWaveSampler`. Note that if
             ``sampling_params`` contains
             :ref:`flux biases <parameter_qpu_flux_biases>`, these are treated as
-            an initial condition and edited in place. Chose a value for the
+            an initial condition and edited in place. Choose a value for the
             :ref:`parameter_qpu_num_reads` parameter in conjunction with your
             chosen schedule. Note that, the :ref:`parameter_qpu_initial_state`
             parameter, if provided, is assumed to be specified according the
@@ -360,7 +360,7 @@ def shim_flux_biases(
     mag_history = {v: [] for v in bqm.variables}
     for step in range(num_steps):
         # Possible feature enhancement for intermediate num_experiments:
-        # following loops are parallelizable, call sample() asyncrhonously.
+        # following loops are parallelizable, call sample() asynchronously.
         for spu in sampling_params_updates:
             sampling_params.update(spu)
             for _ in range(num_signed_experiments):
@@ -639,6 +639,9 @@ def shim_tds_flux_biases(
             parameter.
         line_assignments: Maps each variable (qubit index) to its annealing
             line index.
+        source_lines: Indices of annealing lines whose qubits act as sources.
+            Used by the ``"sequential"`` and ``"by_line_quench"`` strategies to
+            include source lines in the line-wise quench. Optional.
         by_line_pair: If ``True``, the shimming is performed independently
             for each combination of source and detector line.
         sampling_params: Base sampling parameters passed to the sampler.
@@ -665,11 +668,6 @@ def shim_tds_flux_biases(
             If provided, only these variables are included in the two-line
             update scheme, and they must be a subset of variables assigned to
             ``target_lines`` or ``detector_lines``.
-        set_unused_lines_to_Cmin: If ``True``, lines outside
-            ``target_lines`` and ``detector_lines`` are neutralized by setting
-            ``x_anneal_schedules`` to zero-valued schedules, setting
-            ``x_polarizing_schedule`` to zero, and setting
-            ``x_schedule_delays`` to zero.
         decouple_tar_and_det: If ``True``, a copy of ``bqm`` restricted to
             variables assigned to ``target_lines`` or ``detector_lines`` is
             used for shimming. This decouples the target-detector system
@@ -682,8 +680,12 @@ def shim_tds_flux_biases(
         num_reads: If ``sampling_params`` is not provided, this is used to
             set the default number of reads per iterative stage. Larger
             values result in lower variance (better) convergence.
-        td_shim_type: The shimming strategy for target-detector pairs
-            at equilibrium (with source depolarized).
+        td_shim_type: The shimming strategy for target-detector pairs at
+            equilibrium (with source depolarized). One of ``"detector_only"``
+            (shim detector qubits only), ``"by_line_quench"`` (shim every line
+            independently by single-line quench), ``"sequential"`` (a line-wise
+            quench followed by the detector-only shim), or ``"alternating"``
+            (alternate the detector and target roles to shim both).
     Returns:
         A tuple of three parts mirroring the return value of
         :func:`.shim_flux_biases`:

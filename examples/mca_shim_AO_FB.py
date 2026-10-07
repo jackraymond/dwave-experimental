@@ -17,7 +17,7 @@ An example to show coarse-grained calibration refinement for multi-color anneali
 Calibration can be refined relative to the baseline since certain static or low
 frequency control errors are a function of the specific waveforms and programmed
 Hamiltonian.
-flux_biases, x_anneal_delays and anneal_offsets are refined sequentially by simple iterative methods
+flux_biases, x_schedule_delays and anneal_offsets are refined sequentially by simple iterative methods
 that typically succeed to improve calibration on a plurality of qubits.
 
 This example builds many parallel target-detector-source (T-D-S) embeddings that
@@ -127,7 +127,7 @@ def _make_polarizing_schedule(
     """
     if len(times) != 4:
         raise ValueError(
-            "Expecting 2 unpolarized times, followed by two polarized times"
+            "Expecting 2 polarized times, followed by two unpolarized times"
         )
     polarization_schedule = [
         [times[0], 1],
@@ -289,16 +289,17 @@ def make_y(
 ) -> np.ndarray:
     """Make a noise-free model signal for arbitrary basis preparation and detection.
 
-    The source polarization is fixed to sign(Jts * fbs):
-    y(t) = sign(J) y(theta_d, theta_s, phi_d, phi_s) for t > t0, and
-           sign(J) for t < t0   # Constrained by source polarization
+    The source polarization holds the detector state until decoupling at t0:
+    y(t) = sign(sin(theta_s)) for t <= t0 (held by the source polarization), and
+    y(t) = cos(theta_d) yE(t) + sin(theta_d) sin(theta_s) yC(t) for t > t0,
 
-    where y(theta_d, theta_s, phi_d, phi_s) matches Eq. 6 of arXiv:2603.15534.
+    where yE and yC are the energy- and computational-basis terms of Eq. 6 of
+    arXiv:2603.15534 (see make_yE and make_yC).
 
     Assume that the pinning magnetic field from the target ~|Ip(s_tar) Jtd| is large
     compared to the fb_d whilst the source is coupled (the target is pinned), so that
     the detector energetically prefers a state aligned with the target (thence the source)
-    during the coupled phase. The source decoupling is approximated as instantaneously.
+    during the coupled phase. The source decoupling is approximated as instantaneous.
 
     Args:
         delays: Measurement times (microseconds)
@@ -338,7 +339,7 @@ def dyC_dt0(
         delays: Time delays at which to evaluate the derivative (microseconds).
         A: Frequency (GHz).
         T2: Exponential envelope time scale (microseconds).
-        sign_Jts_fbs: Sign convention for the Josephson coupling term (default: -1).
+        sign_Jts_fbs: Sign convention for the Josephson coupling term (default: 1).
 
     Returns:
         Array of derivatives evaluated at each delay.
@@ -366,7 +367,7 @@ def dyC_dA(
         delays: Time delays at which to evaluate the derivative (microseconds).
         A: Frequency (GHz).
         T2: Exponential envelope time scale (microseconds).
-        sign_Jts_fbs: Sign convention for the Josephson coupling term (default: -1).
+        sign_Jts_fbs: Sign convention for the Josephson coupling term (default: 1).
 
     Returns:
         Array of frequency derivatives evaluated at each delay.
@@ -529,7 +530,7 @@ def plot_shim(
             process for every embedding. One per flux iteration.
         num_experiments: Number of programmings per flux iteration. Using 1
             by default it should be noted that 2 magnetizations may be
-            be measured per step in flux_biases.
+            measured per step in flux_biases.
         label: a label for the plots, used in legends.
         max_qubit_labels: maximum number of qubit labels to include in legend,
             if larger, defaults to no labels.
@@ -842,7 +843,7 @@ def estimate_decoupling_timescale(
 
     A bound on the decoupling timescale is first established to O(T2).
     The interval is then searched by bisection to obtain a value that characterizes
-    decoupling in the bulk (mean) to accurace O(1/target_A), variation between lines
+    decoupling in the bulk (mean) to accuracy O(1/target_A), variation between lines
     and qubits on a given line can be of a comparable scale. Series for separated
     lines or qubits can be evaluated by similar principles, and deviations reduced
     by application of anneal offsets on detectors and sources.
@@ -858,8 +859,8 @@ def estimate_decoupling_timescale(
         t_guess: Initial delay guess used to seed the search (microseconds, default: 0.0).
         t_min: Known lower bound on the decoupling delay. If None, it is estimated.
         t_max: Known upper bound on the decoupling delay. If None, it is estimated.
-        target_A: Target amplitude for the decoupling sequence (MHz)
-        T2: Decoherence time (milliseconds)
+        target_A: Target frequency for the decoupling sequence (MHz)
+        T2: Decoherence time (microseconds)
         threshold_cycle_av: Threshold characterizing the decoupled regime (default: 0.9).
             The half-cycle average (t and t+1/(2*target_A)) magnetization is only larger than
             the threshold, in absolute value, in the source-coupled regime.
@@ -1080,6 +1081,9 @@ def main(
             An iterable of integer indices of the detector lines.
         source_lines:
             An iterable of integer indices of the source lines.
+        target_lines:
+            An iterable of integer indices of the target lines. When None,
+            defaults to all lines that are neither detector nor source lines.
         seed:
             Random seed used for embedding generation.
         max_num_embeddings:
@@ -1101,16 +1105,23 @@ def main(
             near target_c (GHz per unit c), used to convert a frequency discrepancy
             into an anneal offset. If None, it is estimated from the schedule file.
         td_shim_type:
-            When set to "None", flux_biases are not modified. When "Detector",
-            flux_biases are modified on detector qubits to achieve zero expected
-            magnetization at long delay. When "Target-Detector", flux_biases are
-            modified on both target and detector qubits. Target-Detector calibration
-            refinement can diverge, particularly for fast quenches of sources and
-            detectors, large |Jtd| or |Jts|, and small target_A.
-        source_decoupling_detection:
-            When True, estimate the delay required for the detector to decouple from
-            the source before collecting timeseries data. When False, this detection
-            stage is skipped.
+            When set to "None", flux_biases are not modified. When
+            "detector_only", flux_biases are modified on detector qubits to
+            achieve zero expected magnetization at long delay. When "sequential"
+            or "alternating", flux_biases are modified on both target and
+            detector qubits. The "alternating" method can diverge, particularly
+            for fast quenches of sources and detectors, large |Jtd| or |Jts|,
+            and small target_A. See :func:`~dwave.experimental.shimming.shim_tds_flux_biases`.
+        t_decoupled:
+            When None (default), estimate the delay required for the detector to
+            decouple from the source before collecting timeseries data. When a
+            float is provided, this detection stage is skipped and the value is
+            applied to all detector lines.
+        by_det_src_pair:
+            When True (default), resolve the source-decoupling delay
+            independently for each detector/source line pair. When False, a
+            single bulk delay is shared across all lines. Has no effect when a
+            single source and single detector line are present.
         num_anneal_offset_iterations:
             Number of anneal-offset refinement iterations to run. The first iteration
             estimates the required offsets; subsequent iterations re-measure and
@@ -1137,8 +1148,16 @@ def main(
             (microseconds).
         Jtd: The coupling strength between target and detector qubits.
         Jts: The coupling strength between target and source qubits.
+        Jtt: The coupling strength between coupled target qubits. Only used when
+            ``loop_length`` is specified.
+        loop_length: When specified, target qubits are embedded in unfrustrated
+            loops of this (even, >=4) length coupled with ``Jtt``; otherwise
+            independent T-D-S systems are used (Larmor precession example).
         preparation_orientation: The orientation of the target qubit whilst coupled
             to the source.
+        embedding_timeout: Time budget (seconds) for the embedding search.
+        colormap_type: Colormap style used for the detector-magnetization
+            heatmaps ("divergent" or "default").
         dt_div_A_final: Sampling rate for the final (loop) experiment. Defaults
             to the same value used in anneal_offset shimming (1/4), smaller values
             can be used for pretty plots.
@@ -1495,10 +1514,6 @@ def main(
         {e: Jtd for e in S.edges() if any(Snode_to_tds[v] == "detector" for v in e)}
         | {e: Jts for e in S.edges() if any(Snode_to_tds[v] == "source" for v in e)},
     )  # bqm restricted to decoupled source and target nodes
-    bqm_td = dimod.BinaryQuadraticModel("SPIN").from_ising(
-        {n: 0 for n in S.nodes() if Snode_to_tds[n] != "source"},
-        {e: Jtd for e in S.edges() if any(Snode_to_tds[v] == "detector" for v in e)},
-    )  # Relevant to flux shimmi
     if td_shim_type != "None":
         stage_idx += 1
         print()
@@ -1511,14 +1526,7 @@ def main(
         else:
             if not online:
                 raise RuntimeError("QPU not available, and no cached data found.")
-            bqm_embedded = dimod.BinaryQuadraticModel("SPIN").from_ising(
-                            {emb[n][0]: h for emb in embs for n, h in bqm_td.linear.items()},
-                            {
-                                tuple(emb[n][0] for n in e): J
-                                for emb in embs
-                                for e, J in bqm_td.quadratic.items()
-                            },
-                        )  # DEBUG - no longer required bqm_td restriction.
+
             bqm_embedded = dimod.BinaryQuadraticModel("SPIN").from_ising(
                             {emb[n][0]: h for emb in embs for n, h in bqm.linear.items()},
                             {
@@ -1526,7 +1534,7 @@ def main(
                                 for emb in embs
                                 for e, J in bqm.quadratic.items()
                             },
-                        )  # DEBUG - no longer required bqm_td restriction.
+                        )
             flux_biases, flux_history, mag_history = shim_tds_flux_biases(
                     bqm=bqm_embedded,
                     sampler=qpu,
@@ -1893,7 +1901,7 @@ def main(
             np.arange(len(y)) / len(y),
             label=f"RMS(It=1)={np.sqrt(np.mean(np.array(y)**2)):.3g}",
         )
-        plt.xlabel(f"Proposed anneal offset")
+        plt.xlabel("Proposed anneal offset")
         plt.ylabel("Cumulative distribution function")
         plt.legend()
         if num_anneal_offset_iterations == 1:
@@ -2110,8 +2118,9 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
         description=(
-            "Target-detector-source embedding demo with optional flux-bias "
-            "calibration refinement and anneal-offset refinement."
+            "Target-detector-source model embedding demo with optional flux-bias, "
+            "anneal offset and x_schedule_delay refinement. "
+            "Higher accuracy methods are possible with experimental insight and enhanced data."
         )
     )
     parser.add_argument(
@@ -2152,7 +2161,7 @@ if __name__ == "__main__":
         type=int,
         nargs="+",
         help="Target lines (one or more integer indices).",
-        default=None,  # First horizontal qubit line under 6-line control
+        default=None,  # Default: all lines that are neither detector nor source lines
     )
     parser.add_argument(
         "--seed",
@@ -2225,9 +2234,11 @@ if __name__ == "__main__":
         default="detector_only",
         help="Flux-bias calibration refinement mode: 'None' disables calibration refinement; "
         "'detector_only' refines detector qubit flux_biases to achieve zero measured magnetization; "
+        "'by_line_quench' refines flux biases on all lines by assuming the required correction can be determined by independent quenches on every line; "
+        "'sequential' combines by_line_quench and detector_only; "
         "'alternating' alternates detector/target roles to refine detector and target flux_biases "
-        " (this can cause divergences, particularly at small frequencies and "
-        "when target_c is desynchronized).",
+        "(but this can cause divergence, particularly at small frequencies and "
+        "when the qubit state realized by target_c varies significantly by line or qubit).",
     )
     parser.add_argument(
         "--t-decoupling",
