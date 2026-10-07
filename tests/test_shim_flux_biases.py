@@ -27,6 +27,10 @@ from dwave.experimental.shimming import (
     shim_tds_flux_biases,
     qubit_freezeout_alpha_phi,
 )
+from dwave.experimental.shimming.flux_biases import (
+    shim_linewise_flux_biases,
+    _extend_history,
+)
 from dwave.experimental.shimming.testing import ShimmingMockSampler
 
 
@@ -437,3 +441,161 @@ class FluxBiases(unittest.TestCase):
         # mag_history len == num_steps.
         self.assertTrue(all(len(fb_history[v]) == 3 for v in shimmed_variables))
         self.assertTrue(all(len(mag_history[v]) == 2 for v in bqm.variables))
+
+    def test_shim_tds_flux_biases_detector_only_explicit(self):
+        """td_shim_type='detector_only' shims only detector-line variables with
+        a single experiment per step."""
+        (
+            sampler,
+            bqm,
+            target_lines,
+            detector_lines,
+            line_assignments,
+            sampling_params,
+            exp_feature_line_info,
+            target_c,
+        ) = self._tds_setup()
+
+        _, fb_history, mag_history = shim_tds_flux_biases(
+            bqm,
+            sampler,
+            target_lines,
+            detector_lines,
+            exp_feature_line_info,
+            sampling_params=sampling_params,
+            num_steps=2,
+            symmetrize_experiments=False,
+            td_shim_type="detector_only",
+        )
+        detector_vars = {
+            v for v in bqm.variables if line_assignments[v] in detector_lines
+        }
+        self.assertSetEqual(set(fb_history.keys()), detector_vars)
+        self.assertTrue(all(len(fb_history[v]) == 3 for v in detector_vars))
+        self.assertTrue(all(len(mag_history[v]) == 2 for v in bqm.variables))
+
+    def test_shim_tds_flux_biases_by_line_quench(self):
+        """td_shim_type='by_line_quench' shims every occupied line independently
+        via :func:`shim_linewise_flux_biases`."""
+        (
+            sampler,
+            bqm,
+            target_lines,
+            detector_lines,
+            line_assignments,
+            sampling_params,
+            exp_feature_line_info,
+            target_c,
+        ) = self._tds_setup()
+
+        flux_biases, fb_history, mag_history = shim_tds_flux_biases(
+            bqm,
+            sampler,
+            target_lines,
+            detector_lines,
+            exp_feature_line_info,
+            sampling_params=sampling_params,
+            symmetrize_experiments=False,
+            td_shim_type="by_line_quench",
+        )
+        self.assertIsInstance(flux_biases, list)
+        self.assertEqual(len(flux_biases), sampler.properties["num_qubits"])
+        self.assertSetEqual(set(fb_history.keys()), set(bqm.variables))
+        self.assertSetEqual(set(mag_history.keys()), set(bqm.variables))
+        for v in bqm.variables:
+            # One extra flux-bias entry (initial condition) vs magnetizations.
+            self.assertEqual(len(fb_history[v]), len(mag_history[v]) + 1)
+
+    def test_shim_tds_flux_biases_sequential(self):
+        """td_shim_type='sequential' runs a line-wise quench followed by a
+        detector-only shim, extending the detector-variable histories."""
+        (
+            sampler,
+            bqm,
+            target_lines,
+            detector_lines,
+            line_assignments,
+            sampling_params,
+            exp_feature_line_info,
+            target_c,
+        ) = self._tds_setup()
+
+        _, fb_history, mag_history = shim_tds_flux_biases(
+            bqm,
+            sampler,
+            target_lines,
+            detector_lines,
+            exp_feature_line_info,
+            sampling_params=sampling_params,
+            num_steps=2,
+            symmetrize_experiments=False,
+            td_shim_type="sequential",
+        )
+        self.assertSetEqual(set(fb_history.keys()), set(bqm.variables))
+        detector_vars = {
+            v for v in bqm.variables if line_assignments[v] in detector_lines
+        }
+        target_vars = {v for v in bqm.variables if line_assignments[v] in target_lines}
+        # Detector variables are shimmed line-wise AND in the detector-only
+        # stage, so their histories are longer than target-only histories.
+        for dv in detector_vars:
+            for tv in target_vars:
+                self.assertGreater(len(fb_history[dv]), len(fb_history[tv]))
+
+    def test_shim_tds_flux_biases_invalid_td_shim_type(self):
+        (
+            sampler,
+            bqm,
+            target_lines,
+            detector_lines,
+            line_assignments,
+            sampling_params,
+            exp_feature_line_info,
+            target_c,
+        ) = self._tds_setup()
+        with self.assertRaises(ValueError):
+            shim_tds_flux_biases(
+                bqm,
+                sampler,
+                target_lines,
+                detector_lines,
+                exp_feature_line_info,
+                sampling_params=sampling_params,
+                td_shim_type="not_a_real_mode",
+            )
+
+    def test_shim_linewise_flux_biases(self):
+        (
+            sampler,
+            bqm,
+            target_lines,
+            detector_lines,
+            line_assignments,
+            sampling_params,
+            exp_feature_line_info,
+            target_c,
+        ) = self._tds_setup()
+        num_steps = 2
+        flux_biases, fb_history, mag_history = shim_linewise_flux_biases(
+            exp_feature_line_info,
+            bqm,
+            sampler,
+            sampling_params=sampling_params,
+            num_steps=num_steps,
+        )
+        self.assertIsInstance(flux_biases, list)
+        self.assertEqual(len(flux_biases), sampler.properties["num_qubits"])
+        # Each variable is shimmed once, on the line it is assigned to.
+        self.assertSetEqual(set(fb_history.keys()), set(bqm.variables))
+        self.assertSetEqual(set(mag_history.keys()), set(bqm.variables))
+        for v in bqm.variables:
+            self.assertEqual(len(fb_history[v]), num_steps + 1)
+            self.assertEqual(len(mag_history[v]), num_steps)
+
+    def test_extend_history(self):
+        target = {"a": [1, 2], "b": [3]}
+        source = {"a": [9], "c": [7, 8]}
+        _extend_history(target, source)
+        self.assertEqual(target["a"], [1, 2, 9])  # existing key extended
+        self.assertEqual(target["b"], [3])  # untouched
+        self.assertEqual(target["c"], [7, 8])  # new key added
