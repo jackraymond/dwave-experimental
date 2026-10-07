@@ -431,6 +431,15 @@ def shim_flux_biases(
     return flux_biases, flux_bias_history, mag_history
 
 
+def _extend_history(target: dict, source: dict) -> None:
+    """Append ``source`` list values onto existing ``target`` entries."""
+    for k, v in source.items():
+        if k in target:
+            target[k] = target[k] + list(v)
+        else:
+            target[k] = v
+
+
 def shim_linewise_flux_biases(
     exp_feature_line_info: dict,
     bqm: dimod.BinaryQuadraticModel,
@@ -532,8 +541,8 @@ def shim_linewise_flux_biases(
             alpha=alpha,
             shimmed_variables=line_shimmed_variables,
         )
-        dict_fb_all.update(dict_fb)
-        dict_mag_all.update({k: dict_mag[k] for k in dict_fb})
+        _extend_history(dict_fb_all, dict_fb)
+        _extend_history(dict_mag_all, {k: dict_mag[k] for k in dict_fb})
 
     return flux_biases, dict_fb_all, dict_mag_all
 
@@ -554,7 +563,7 @@ def shim_tds_flux_biases(
     sampler: dimod.Sampler,
     target_lines: set,
     detector_lines: set,
-    line_assignments: dict | None = None,
+    exp_feature_line_info: list[dict],
     *,
     source_lines: set | None = None,
     by_line_pair: bool = True,
@@ -567,7 +576,6 @@ def shim_tds_flux_biases(
     alpha: Optional[float] = None,
     shimmed_variables: Optional[Iterable[Variable]] = None,
     decouple_tar_and_det: bool | None = None,
-    exp_feature_line_info: Optional[dict] = None,
     target_c: Optional[float] = None,
     num_reads: int = 500,
     td_shim_type: Literal[
@@ -637,8 +645,10 @@ def shim_tds_flux_biases(
             detectors. By default all bqm qubits on the detector lines are
             shimmed, but the set can be reduced using the shim_variables
             parameter.
-        line_assignments: Maps each variable (qubit index) to its annealing
-            line index.
+        exp_feature_line_info: Per-line experiment feature information. Used to
+            map each variable (qubit index) to its annealing line index, and,
+            when ``sampling_params`` is not provided, to parameterize
+            ``x_anneal_schedules``.
         source_lines: Indices of annealing lines whose qubits act as sources.
             Used by the ``"sequential"`` and ``"by_line_quench"`` strategies to
             include source lines in the line-wise quench. Optional.
@@ -673,8 +683,6 @@ def shim_tds_flux_biases(
             used for shimming. This decouples the target-detector system
             from any residual couplings to qubits on other annealing lines.
             The caller's ``bqm`` is not modified. Default is ``True``.
-        exp_feature_line_info: If ``sampling_params`` is not provided, this
-            is used to parameterize ``x_anneal_schedules``.
         target_c: If ``sampling_params`` is not provided, this is used
            to parameterize x_anneal_schedules for ``target_lines``.
         num_reads: If ``sampling_params`` is not provided, this is used to
@@ -702,17 +710,11 @@ def shim_tds_flux_biases(
             "There must be detector lines to shim, but detector_lines is empty"
         )
 
-    if line_assignments is None:
-        if exp_feature_line_info is not None:
-            line_assignments = {
-                q: i
-                for i, line_info in enumerate(exp_feature_line_info)
-                for q in line_info["qubits"]
-            }
-        else:
-            raise ValueError(
-                "line_assignments must be provided if exp_feature_line_info is None"
-            )
+    line_assignments = {
+        q: i
+        for i, line_info in enumerate(exp_feature_line_info)
+        for q in line_info["qubits"]
+    }
 
     if sampling_params is None:
         # A symmetric default schedule is effective. Dependence on the detailed
@@ -734,18 +736,13 @@ def shim_tds_flux_biases(
                 detector_lines=detector_lines,
                 use_common_bounds=use_common_bounds,
                 symmetrize_c_bounds=symmetrize_c_bounds,
-                set_unused_lines_to_Cmin=True,
             ),  # For consistency under line swapping.
             num_reads=num_reads,
             x_disable_filtering=True,
         )
     else:
         sampling_params = deepcopy(sampling_params)
-    num_lines = (
-        len(sampling_params["x_anneal_schedules"])
-        if exp_feature_line_info is None
-        else len(exp_feature_line_info)
-    )
+    num_lines = len(exp_feature_line_info)
     if "x_schedule_delays" not in sampling_params:
         sampling_params["x_schedule_delays"] = [0.0] * num_lines
     sampling_params.pop("x_polarizing_schedule", None)
@@ -767,7 +764,7 @@ def shim_tds_flux_biases(
             dict_mag_all = {}
             shim_lines = dt_lines
         elif td_shim_type == "sequential" or td_shim_type == "by_line_quench":
-            tds_lines = dt_lines
+            tds_lines = dt_lines.copy()
             if source_lines is not None:
                 tds_lines |= set(source_lines)
             flux_biases, dict_fb_all, dict_mag_all = shim_linewise_flux_biases(
@@ -791,7 +788,7 @@ def shim_tds_flux_biases(
     viable_shimmed_variables = set(
         v for v in bqm.variables if line_assignments[v] in shim_lines
     )  # Only detectors and targets are shimmed henceforth
-    unused_lines = set(range(len(exp_feature_line_info))).difference(dt_lines)
+    unused_lines = set(range(num_lines)).difference(dt_lines)
     sampling_params["x_anneal_schedules"] = _neutralize_lines(
         exp_feature_line_info, unused_lines, sampling_params["x_anneal_schedules"]
     )
@@ -833,7 +830,6 @@ def shim_tds_flux_biases(
                         sampler=sampler,
                         target_lines={target_line},
                         detector_lines={detector_line},
-                        line_assignments=line_assignments,
                         by_line_pair=False,
                         sampling_params=sampling_params,
                         learning_schedule=learning_schedule,
@@ -846,8 +842,8 @@ def shim_tds_flux_biases(
                         decouple_tar_and_det=True,  # Done
                         exp_feature_line_info=exp_feature_line_info,
                     )
-                    dict_fb_all.update(dict_fb)
-                    dict_mag_all.update({k: dict_mag[k] for k in dict_fb})
+                    _extend_history(dict_fb_all, dict_fb)
+                    _extend_history(dict_mag_all, {k: dict_mag[k] for k in dict_fb})
             return flux_biases, dict_fb_all, dict_mag_all
         else:
             # Alternate between detector and target quench.
@@ -909,6 +905,6 @@ def shim_tds_flux_biases(
         exp_weights_per_update=exp_weights_per_update,
         shimmed_variables=shimmed_variables,
     )
-    dict_fb_all.update(dict_fb)
-    dict_mag_all.update(dict_mag)
+    _extend_history(dict_fb_all, dict_fb)
+    _extend_history(dict_mag_all, dict_mag)
     return flux_biases, dict_fb_all, dict_mag_all

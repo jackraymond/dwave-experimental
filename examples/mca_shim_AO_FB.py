@@ -53,90 +53,9 @@ from dwave.experimental.multicolor_anneal import (
     get_properties,
     make_tds_graph,
     make_tds_x_schedules,
-    #   make_tds_x_schedule_delays,
     SOLVER_FILTER,
 )
 from dwave.experimental.shimming import shim_tds_flux_biases
-
-
-def _make_anneal_schedules(
-    exp_feature_info: list,
-    target_c: float = 0.37,
-    times: list[float] | tuple[float] = (0.0, 1.0, 21.0, 22.0, 23.0, 24.0, 25.0),
-    line_detector: int = 0,
-    line_source: int = 3,
-):
-    """Set annealing schedules suitable for Larmor precision.
-
-    See documentation for Larmor precession example, the same
-    schedule is used.
-    """
-
-    num_lines = len(exp_feature_info)
-    min_time_step = exp_feature_info[0]["minAnnealingTimeStep"]
-    if len(times) != 7 or np.min(np.diff(times)) < 2 * min_time_step:
-        raise ValueError("Format assumes 7 times each separated by atleast 2 minStep")
-
-    maxCs = {line: exp_feature_info[line]["maxC"] for line in range(num_lines)}
-    minCs = {line: exp_feature_info[line]["minC"] for line in range(num_lines)}
-
-    anneal_schedules = [
-        [
-            [times[0], 0.0],
-            [times[1], 0.0],
-            [times[2], 0.0],
-            [times[3], target_c],
-            [times[4], target_c],
-            [times[4] + min_time_step, target_c],
-            [times[5], target_c],
-            [times[6], 1.0],
-        ]
-    ] * num_lines
-    anneal_schedules[line_source] = [
-        [times[0], 0.0],
-        [times[1], maxCs[line_source]],
-        [times[2], maxCs[line_source]],
-        [times[3], maxCs[line_source]],
-        [times[4], maxCs[line_source]],
-        [times[4] + min_time_step, minCs[line_source]],
-        [times[5], minCs[line_source]],
-        [times[6], 1.0],
-    ]
-    anneal_schedules[line_detector] = [
-        [times[0], 0.0],
-        [times[1], minCs[line_detector]],
-        [times[2], minCs[line_detector]],
-        [times[3], minCs[line_detector]],
-        [times[4], minCs[line_detector]],
-        [times[4] + min_time_step, maxCs[line_detector]],
-        [times[5], maxCs[line_detector]],
-        [times[6], 1.0],
-    ]
-    return anneal_schedules
-
-
-def _make_polarizing_schedule(
-    *,
-    sign_polarization: int = 1,
-    times: list[float] | tuple[float] = (0.0, 1.0, 2.0, 25.0),
-):
-    """Set polarizing schedules suitable for Larmor precession.
-
-    See documentation for Larmor precession example, the same
-    schedule is used.
-    """
-    if len(times) != 4:
-        raise ValueError(
-            "Expecting 2 polarized times, followed by two unpolarized times"
-        )
-    polarization_schedule = [
-        [times[0], 1],
-        [times[1], 1],
-        [times[2], 0],
-        [times[3], 0],
-    ]
-    return polarization_schedule
-
 
 def _figure_path(
     figures_dir: str, figure_label: str, cache_str: str | None = None
@@ -520,6 +439,7 @@ def plot_shim(
     label: str = "",
     max_qubit_labels: int = 10,
     plt_show_block: None | bool = None,
+    line_assignments: dict[int, int] | None = None,
 ) -> None:
     """Plot the iterative flux-bias calibration refinement process.
 
@@ -533,70 +453,137 @@ def plot_shim(
             measured per step in flux_biases.
         label: a label for the plots, used in legends.
         max_qubit_labels: maximum number of qubit labels to include in legend,
-            if larger, defaults to no labels.
+            if larger, defaults to no labels. Ignored when ``line_assignments``
+            is provided.
         plt_show_block: If not None (default), then execute
             :code:`plt.show(block=plt_show_block)` to display the figure.
+        line_assignments: Optional mapping from qubit to annealing line index.
+            When provided, qubit traces are drawn one line at a time, each line
+            with a distinct color and a single legend entry. When None, every
+            qubit is drawn with the default color cycle (current behavior).
     """
-    mag_array = np.array(list(mag_history.values()))
-    flux_array = np.array(list(flux_history.values()))
-
-    mag_array = np.reshape(
-        mag_array,
-        (mag_array.shape[0], mag_array.shape[1] // num_experiments, num_experiments),
-    )
+    line_to_color: dict = {}
+    if line_assignments is None:
+        # All values share a length, so a single cast is safe.
+        line_to_color = {None: None}
+        line_groups = [(None, list(mag_history.keys()), list(flux_history.keys()))]
+    else:
+        lines_sorted = sorted(
+            {line_assignments[q] for q in set(mag_history) | set(flux_history)}
+        )
+        cmap = plt.colormaps.get_cmap("plasma")
+        denom = max(len(lines_sorted) - 1, 1)
+        line_to_color = {line: cmap(i / denom) for i, line in enumerate(lines_sorted)}
+        # Lengths can differ between lines (e.g. td_shim_type="sequential"), so
+        # each line is cast and reshaped independently.
+        line_groups = [
+            (
+                line,
+                [q for q in mag_history if line_assignments[q] == line],
+                [q for q in flux_history if line_assignments[q] == line],
+            )
+            for line in lines_sorted
+        ]
 
     plt.figure("All_Qubit_Magnetization_by_calibration_refinement_iteration")
     plt.title(r"Magnetization by iteration, $\langle Z\rangle_{detector}$")
-    y0 = 0
-    for experiment_sign in range(num_experiments):
-        y = mag_array[:, :, experiment_sign].transpose()
+    bulk_data = []
+    for line, mag_keys, flux_keys in line_groups:
+        if not mag_keys:
+            continue
+        color = line_to_color[line]
+        mag_array = np.array([mag_history[q] for q in mag_keys])
+        mag_array = np.reshape(
+            mag_array,
+            (
+                mag_array.shape[0],
+                mag_array.shape[1] // num_experiments,
+                num_experiments,
+            ),
+        )
+        y0 = 0
+        for experiment_sign in range(num_experiments):
+            y = mag_array[:, :, experiment_sign].transpose()
+            if color is None:
+                if num_experiments > 1:
+                    plt.plot(y, label=f"Initial state all {-1 + 2*experiment_sign}")
+                else:
+                    plt.plot(y)
+            else:
+                traces = plt.plot(y, color=color)
+                if experiment_sign == 0 and traces:
+                    traces[0].set_label(f"{label} line {line}".strip())
+            y0 = y0 + y / num_experiments
+        if color is None and num_experiments > 1:
+            plt.plot(
+                np.mean(mag_array, axis=2).transpose(),
+                color="black",
+                label="Experiment average",
+            )
+        bulk_data.append((line, color, y0))
+
+    if line_assignments is None:
         if num_experiments > 1:
-            plt.plot(
-                y,
-                label=f"Initial state all {-1 + 2*experiment_sign}",
-            )
+            plt.legend()
+            plt.xlabel("Calibration refinement iteration")
         else:
-            plt.plot(
-                y,
-            )
-        y0 = y0 + y / num_experiments
+            plt.xlabel("Programming")
+            if len(mag_history) <= max_qubit_labels:
+                plt.legend(flux_history.keys(), title=f"{label} Qubit index")
+    else:
+        plt.xlabel("Calibration refinement iteration")
+        plt.legend(title=f"{label} Line".strip())
+    plt.ylabel("Magnetization")
 
     plt.figure("Bulk_Magnetization_by_calibration_refinement_iteration")
-    n_qubits = y0.shape[1]
-    rms = np.sqrt(np.mean(y0**2, axis=1))
-    # Jackknife standard error: recompute RMS leaving out one qubit at a time.
-    loo_ss = np.sum(y0**2, axis=1, keepdims=True) - y0**2
-    rms_loo = np.sqrt(loo_ss / (n_qubits - 1))
-    rms_se = np.sqrt(
-        (n_qubits - 1)
-        / n_qubits
-        * np.sum((rms_loo - rms_loo.mean(axis=1, keepdims=True)) ** 2, axis=1)
-    )
-    plt.errorbar(np.arange(len(rms)), rms, yerr=rms_se, capsize=3)
+    for line, color, y0 in bulk_data:
+        n_qubits = y0.shape[1]
+        rms = np.sqrt(np.mean(y0**2, axis=1))
+        if n_qubits > 1:
+            # Jackknife standard error: recompute RMS leaving out one qubit at a time.
+            loo_ss = np.sum(y0**2, axis=1, keepdims=True) - y0**2
+            rms_loo = np.sqrt(loo_ss / (n_qubits - 1))
+            rms_se = np.sqrt(
+                (n_qubits - 1)
+                / n_qubits
+                * np.sum((rms_loo - rms_loo.mean(axis=1, keepdims=True)) ** 2, axis=1)
+            )
+        else:
+            rms_se = np.zeros_like(rms)
+        if color is None:
+            plt.errorbar(np.arange(len(rms)), rms, yerr=rms_se, capsize=3)
+        else:
+            plt.errorbar(
+                np.arange(len(rms)),
+                rms,
+                yerr=rms_se,
+                capsize=3,
+                color=color,
+                label=f"{label} line {line}".strip(),
+            )
+    if line_assignments is not None:
+        plt.legend(title=f"{label} Line".strip())
     plt.xlabel("Calibration refinement iteration")
     plt.ylabel("Root Mean Square Magnetization")
 
-    plt.figure("All_Qubit_Magnetization_by_calibration_refinement_iteration")
-    if num_experiments > 1:
-        plt.plot(
-            np.mean(mag_array, axis=2).transpose(),
-            color="black",
-            label="Experiment average",
-        )
-        plt.legend()
-        plt.xlabel("Calibration refinement iteration")
-    else:
-        plt.xlabel("Programming")
-        if mag_array.shape[0] <= max_qubit_labels:
-            plt.legend(flux_history.keys(), title=f"{label} Qubit index")
-    plt.ylabel("Magnetization")
-
     plt.figure("Flux_bias_by_calibration_refinement_iteration")
     plt.title("All refined flux_biases")
-    plt.plot(flux_array.transpose())
+    for line, mag_keys, flux_keys in line_groups:
+        if not flux_keys:
+            continue
+        color = line_to_color[line]
+        flux_array = np.array([flux_history[q] for q in flux_keys])
+        if color is None:
+            plt.plot(flux_array.transpose())
+        else:
+            traces = plt.plot(flux_array.transpose(), color=color)
+            if traces:
+                traces[0].set_label(f"{label} line {line}".strip())
     plt.xlabel("Calibration refinement iteration")
     plt.ylabel("Flux bias ($\\Phi_0$)")
-    if mag_array.shape[0] <= max_qubit_labels:
+    if line_assignments is not None:
+        plt.legend(title=f"{label} Line".strip())
+    elif len(mag_history) <= max_qubit_labels:
         plt.legend(flux_history.keys(), title=f"{label} Qubit index")
     _apply_tight_layout()
     if plt_show_block is not None:
@@ -1446,7 +1433,29 @@ def main(
     else:
         S_experiment = S
 
-    fn_cache = f"cache/emb_{cache_str}.pkl"
+    if cache_str:
+        # Identifier depending only on parameters that affect the embedding
+        # search (the lines below), so cached embeddings are reused when other
+        # parameters are varied.
+        embedding_cache_str = hashlib.sha256(
+            json.dumps(
+                {
+                    "solver": "DefaultSolver" if solver == SOLVER_FILTER else solver,
+                    "detector_lines": sorted(detector_lines),
+                    "source_lines": sorted(source_lines),
+                    "target_lines": sorted(target_lines),
+                    "loop_length": loop_length,
+                    "max_num_embeddings": max_num_embeddings,
+                    "seed": seed,
+                    "embedding_timeout": embedding_timeout,
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()[:8]
+    else:
+        embedding_cache_str = None
+
+    fn_cache = f"cache/emb_{embedding_cache_str}.pkl"
     if cache_str:
         os.makedirs(os.path.dirname(fn_cache), exist_ok=True)
 
@@ -1541,7 +1550,6 @@ def main(
                     sampling_params=sampling_params,
                     target_lines=set(target_lines),
                     detector_lines=set(detector_lines),
-                    line_assignments=line_assignments,
                     td_shim_type=td_shim_type,
                     exp_feature_line_info=exp_feature_info[1],
                     source_lines=set(source_lines)
@@ -1561,10 +1569,17 @@ def main(
             if cache_str:
                 with open(fn_cache, "wb") as f:
                     pickle.dump((flux_biases, flux_history, mag_history), f)
-        plot_shim(
-            mag_history,
-            flux_history,
-        )
+        if td_shim_type != 'detector_only':
+            plot_shim(
+                line_assignments=line_assignments,
+                mag_history=mag_history,
+                flux_history=flux_history,
+            )
+        else:
+            plot_shim(
+                mag_history=mag_history,
+                flux_history=flux_history,
+            )
         sampling_params["flux_biases"] = flux_biases
         if save_figures:
             _save_open_figures("figures/", cache_str)

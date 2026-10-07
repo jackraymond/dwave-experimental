@@ -388,11 +388,10 @@ class FluxBiases(unittest.TestCase):
                     sampler,
                     target_lines,
                     detector_lines,
-                    line_assignments,
+                    exp_feature_line_info,
                     sampling_params=sp,
                     num_steps=2,
                     symmetrize_experiments=False,
-                    exp_feature_line_info=exp_feature_line_info,
                     target_c=target_c,
                 )
 
@@ -426,7 +425,7 @@ class FluxBiases(unittest.TestCase):
             sampler,
             target_lines,
             detector_lines,
-            line_assignments,
+            exp_feature_line_info,
             sampling_params=sampling_params,
             num_steps=2,
             symmetrize_experiments=False,
