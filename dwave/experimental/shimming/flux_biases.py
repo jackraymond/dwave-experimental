@@ -453,6 +453,7 @@ def shim_linewise_flux_biases(
     alpha: Optional[float] = None,
     shimmed_variables: Optional[Iterable[Variable]] = None,
     lines: Iterable[int] | None = None,
+    target_c: float | None = None,
 ) -> tuple[list[Bias], dict, dict]:
     """Shim flux_biases by per-line quench
 
@@ -487,6 +488,7 @@ def shim_linewise_flux_biases(
             during the line to which it is assigned.
         lines: Annealing lines to shim, one at a time. Defaults to all lines in
             ``exp_feature_line_info``.
+        target_c: Value at which line is prepared before quenching.
 
     Returns:
         A tuple of three parts mirroring the return value of
@@ -517,9 +519,11 @@ def shim_linewise_flux_biases(
     for line in set(lines).intersection(viable_lines):
         x_anneal_schedules = make_tds_x_anneal_schedules(
             exp_feature_line_info=exp_feature_line_info,
-            detector_lines={line},
+            detector_lines={},
             target_lines={},
             source_lines={},
+            detected_target_lines={line},
+            target_c=target_c,
         )
 
         line_shimmed_variables = [
@@ -773,6 +777,7 @@ def shim_tds_flux_biases(
                 sampler=sampler,
                 sampling_params=sampling_params,
                 lines=tds_lines,
+                target_c=target_c,
             )
             if td_shim_type == "by_line_quench":
                 return flux_biases, dict_fb_all, dict_mag_all

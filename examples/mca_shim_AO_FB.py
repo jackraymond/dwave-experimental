@@ -57,6 +57,7 @@ from dwave.experimental.multicolor_anneal import (
 )
 from dwave.experimental.shimming import shim_tds_flux_biases
 
+
 def _figure_path(
     figures_dir: str, figure_label: str, cache_str: str | None = None
 ) -> str:
@@ -813,12 +814,13 @@ def estimate_decoupling_timescale(
     target_A: float = 2000,
     T2: float = 0.0101,
     threshold_cycle_av: float = 0.9,
-    verbose: bool = True,
+    phase_accuracy: float | None = None,
+    verbose: bool = False,
     by_det_src_pair: bool = True,
     line_assignments: dict[int, int] | None = None,
     source_lines: Iterable[int] | None = None,
 ) -> tuple[dict[int, float], list]:
-    """Estimate bulk decoupling delay
+    """Estimate bulk decoupling timescales
 
     Source and detector waveforms typically overlap, in order that the detection
     is not of a source-coupled system a delay is required.
@@ -834,6 +836,12 @@ def estimate_decoupling_timescale(
     and qubits on a given line can be of a comparable scale. Series for separated
     lines or qubits can be evaluated by similar principles, and deviations reduced
     by application of anneal offsets on detectors and sources.
+
+    Source-detectors are tightly synchronized by line in this demo as an initial stage.
+    It would be more natural to coarsely synchronize, align target frequencies,
+    and then refine the line-wise synchonization and finally use per-qubit
+    anneal_offsets approximating some c(t) on source and detectors. A linear
+    approximation assuming a common dc/dt may be sufficient.
 
     Args:
         sampler: Parallel embedding composite sampler wrapping the QPU sampler.
@@ -863,6 +871,10 @@ def estimate_decoupling_timescale(
             (and by_det_src_pair is True), detector delays are resolved using only the
             reference-source embeddings, and each additional source line returns a
             decoupling delay relative to the reference source line.
+        phase_accuracy: The desired accuracy for the decoupling timescale estimate. If
+            only one source and detector line are present, an accuracy 1. is defaulted.
+            With multiple source or detector lines, a high accuracy is appropriate
+            to account for line-wise desynchonizations.
 
     Returns:
         A tuple containing:
@@ -877,6 +889,11 @@ def estimate_decoupling_timescale(
     half_cycle = 1 / target_A / 2.0
     data = []
     cache = {}
+    if phase_accuracy is None:
+        if len(source_lines) == 1 and len(detector_lines) == 1:
+            phase_accuracy = 1.0
+        else:
+            phase_accuracy = 0.025
 
     def _measure(delay):
         """Sample per-embedding detector magnetization, reusing cached delays."""
@@ -915,9 +932,9 @@ def estimate_decoupling_timescale(
                     t_guess += T2
         if verbose:
             print(
-                "Estimate decoupling timescale to accuracy better than 1/target_A, with ~log(T2*target_A) programmings"
+                f"Estimate decoupling timescale to accuracy better than {time_accuracy}/target_A, with ~log(T2*target_A) programmings"
             )
-        while t_max - t_min > 1 / target_A:
+        while t_max - t_min > phase_accuracy / target_A:
             t_guess = (t_min + t_max) / 2
             v = vec(t_guess)
             if np.median(v) * preparation_orientation < threshold_cycle_av:
@@ -978,12 +995,9 @@ def estimate_decoupling_timescale(
             mask = (emb_detector_lines == reference_detector) & (
                 emb_source_lines == source_line
             )
-            t_decoupled[source_line] = (
-                t_reference -
-                _resolve(
-                    mask,
-                    f"source line {source_line} on reference detector line {reference_detector}",
-                )
+            t_decoupled[source_line] = t_reference - _resolve(
+                mask,
+                f"source line {source_line} on reference detector line {reference_detector}",
             )
 
     return t_decoupled, data
@@ -1016,7 +1030,9 @@ def main(
     target_A: float | None = None,
     target_B: float | None = None,
     dAdc: float | None = None,
-    td_shim_type: Literal["None", "alternating", "detector_only", "sequential"] = "detector_only",
+    td_shim_type: Literal[
+        "None", "alternating", "detector_only", "sequential"
+    ] = "detector_only",
     t_decoupled: float | None = None,
     by_det_src_pair: bool = True,
     num_anneal_offset_iterations: int = 2,
@@ -1537,23 +1553,24 @@ def main(
                 raise RuntimeError("QPU not available, and no cached data found.")
 
             bqm_embedded = dimod.BinaryQuadraticModel("SPIN").from_ising(
-                            {emb[n][0]: h for emb in embs for n, h in bqm.linear.items()},
-                            {
-                                tuple(emb[n][0] for n in e): J
-                                for emb in embs
-                                for e, J in bqm.quadratic.items()
-                            },
-                        )
+                {emb[n][0]: h for emb in embs for n, h in bqm.linear.items()},
+                {
+                    tuple(emb[n][0] for n in e): J
+                    for emb in embs
+                    for e, J in bqm.quadratic.items()
+                },
+            )
             flux_biases, flux_history, mag_history = shim_tds_flux_biases(
-                    bqm=bqm_embedded,
-                    sampler=qpu,
-                    sampling_params=sampling_params,
-                    target_lines=set(target_lines),
-                    detector_lines=set(detector_lines),
-                    td_shim_type=td_shim_type,
-                    exp_feature_line_info=exp_feature_info[1],
-                    source_lines=set(source_lines)
-                )
+                bqm=bqm_embedded,
+                sampler=qpu,
+                sampling_params=sampling_params,
+                target_lines=set(target_lines),
+                detector_lines=set(detector_lines),
+                td_shim_type=td_shim_type,
+                exp_feature_line_info=exp_feature_info[1],
+                source_lines=set(source_lines),
+                target_c=target_c,
+            )
             polarization_candidates = [
                 (i, flux_biases[i])
                 for i in range(len(flux_biases))
@@ -1569,7 +1586,7 @@ def main(
             if cache_str:
                 with open(fn_cache, "wb") as f:
                     pickle.dump((flux_biases, flux_history, mag_history), f)
-        if td_shim_type != 'detector_only':
+        if td_shim_type != "detector_only":
             plot_shim(
                 line_assignments=line_assignments,
                 mag_history=mag_history,
@@ -1624,31 +1641,89 @@ def main(
             if cache_str:
                 with open(fn_cache, "wb") as f:
                     pickle.dump((t_decoupled, t_mags), f)
-        plt.figure("source_decoupling")
-        x = [t for t, _ in t_mags]
-        y = [mag for _, mag in t_mags]
-        plt.plot(
-            x,
-            y,
-            linestyle="None",
-            marker=".",
-        )
-        plt.xlabel("Time")
-        plt.ylabel("Magnitude")
-        plt.title("Source Decoupling Detection")
-        for line, t in t_decoupled.items():
-            plt.axvline(
-                t,
+        delays_arr = np.array([t for t, _ in t_mags])
+        mags_arr = np.array([mag for _, mag in t_mags])
+        if len(source_lines) == 1 and len(detector_lines) == 1:
+            plt.figure("source_decoupling")
+            plt.plot(
+                delays_arr,
+                mags_arr,
+                linestyle="None",
+                marker=".",
+            )
+            plt.xlabel("Time")
+            plt.ylabel("Magnitude")
+            plt.title("Source Decoupling Detection")
+            for line, t in t_decoupled.items():
+                plt.axvline(
+                    t,
+                    color="r",
+                    linestyle="--",
+                    label=f"Estimated decoupling delay (line {line})",
+                )
+            plt.legend()
+        else:
+            # Per-qubit line assignments let us align each series by its own
+            # source/detector decoupling delay: x = t + source_delay - detector_delay.
+            emb_detector_lines = np.array(
+                [
+                    line_assignments[emb[("detector", 0)][0]]
+                    for emb in sampler.embeddings
+                ]
+            )
+            emb_source_lines = np.array(
+                [line_assignments[emb[("source", 0)][0]] for emb in sampler.embeddings]
+            )
+            shifts = np.array(
+                [
+                    t_decoupled.get(src, 0.0) - t_decoupled[det]
+                    for det, src in zip(emb_detector_lines, emb_source_lines)
+                ]
+            )
+            fig, (ax_before, ax_after) = plt.subplots(
+                1, 2, sharey=True, num="source_decoupling"
+            )
+            ax_before.plot(
+                delays_arr,
+                mags_arr,
+                linestyle="None",
+                marker=".",
+            )
+            ax_before.set_xlabel("Time")
+            ax_before.set_ylabel("Magnitude")
+            ax_before.set_title("Source Decoupling Detection")
+            for line, t in t_decoupled.items():
+                ax_before.axvline(
+                    t,
+                    color="r",
+                    linestyle="--",
+                    label=f"Estimated decoupling delay (line {line})",
+                )
+            ax_before.legend()
+            x_shifted = delays_arr[:, None] + shifts[None, :]
+            ax_after.plot(
+                x_shifted,
+                mags_arr,
+                linestyle="None",
+                marker=".",
+            )
+            ax_after.axvline(
+                0.0,
                 color="r",
                 linestyle="--",
-                label=f"Estimated decoupling delay (line {line})",
+                label="Aligned decoupling delay",
             )
-        plt.legend()
+            ax_after.set_xlabel("Time (t + source_delay - detector_delay)")
+            ax_after.set_title("Source Decoupling (delay-aligned)")
+            ax_after.legend()
         if save_figures:
             _save_open_figures("figures/", cache_str)
         print("Close figures to proceed to next stages.")
         _apply_tight_layout()
-        print('Detected decoupling times by detector line (or relative offset required on source line)', t_decoupled)
+        print(
+            "Detected decoupling times by detector line (or relative offset required on source line)",
+            t_decoupled,
+        )
         plt.show()
     else:
         # A user-provided scalar delay applies to all detector lines.
@@ -1660,7 +1735,7 @@ def main(
 
     nyquist_frequency = target_A * 1000 * 2
     for line, val in t_decoupled.items():
-       sampling_params['x_schedule_delays'][line] = val
+        sampling_params["x_schedule_delays"][line] = val
 
     delay_min_fit = delay_min = 1 / (
         target_A * 1000
@@ -1800,7 +1875,7 @@ def main(
         print(
             f"Stage {stage_idx}b: Estimate anneal offsets required to achieve the target frequency {target_A:.3g}GHz (for all {n_embs} parallel embeddings)."
         )
-        print("Anneal offset using a linear model based upon the provided schedule.")
+        print(f"1-step anneal offset correction, parameterized by {schedule_fn}. ")
 
         fn_cache = f"cache/AO_It0_{cache_str}.npy"
         if cache_str and os.path.isfile(fn_cache):
@@ -2245,7 +2320,13 @@ if __name__ == "__main__":
         "--flux-bias-method",
         dest="td_shim_type",
         type=str,
-        choices=["None", "detector_only", "alternating", "sequential", 'by_line_quench'],
+        choices=[
+            "None",
+            "detector_only",
+            "alternating",
+            "sequential",
+            "by_line_quench",
+        ],
         default="detector_only",
         help="Flux-bias calibration refinement mode: 'None' disables calibration refinement; "
         "'detector_only' refines detector qubit flux_biases to achieve zero measured magnetization; "
@@ -2270,7 +2351,7 @@ if __name__ == "__main__":
         help="Resolve source-decoupling delays independently per detector/source line pair "
         "(default). Use --no-delay-by-det-src-pair to estimate a single bulk delay shared "
         "across all lines. This setting has no impact if only "
-        "one source and one detector line is present."
+        "one source and one detector line is present.",
     )
     parser.add_argument(
         "--num_anneal_offset_iterations",

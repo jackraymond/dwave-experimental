@@ -596,7 +596,7 @@ def make_tds_x_anneal_schedules(
     target_lines: Iterable[int] = tuple(),
     detector_lines: Iterable[int] = tuple(),
     *,
-    target_c: float | None = None,
+    target_c: float | dict[int, float] | None = None,
     polarized_preparation_interval: Interval | None = None,
     depolarized_preparation_interval: Interval | None = None,
     detector_quench_time: float | None = None,
@@ -608,6 +608,7 @@ def make_tds_x_anneal_schedules(
     use_overshoot: bool | dict[str, bool] = True,
     post_pwl_delay: float = 1.0,
     quench_step_sizes: float | dict[int, float] | None = None,
+    detected_target_lines: Iterable[int] = tuple(),
 ) -> XAnnealSchedules:
     """Set annealing schedules for target-detector-source experiments.
 
@@ -640,7 +641,9 @@ def make_tds_x_anneal_schedules(
         target_lines: Iterable of target line indices.
         detector_lines: Iterable of detector line indices.
         target_c: Schedule value at which the target is held. This must be specified
-            if target_lines is not empty.
+            if target_lines is not empty. If a dictionary format is provided, the 
+            held value can vary by line - it should be keyed by line number. If it is
+            not specified lines are prepared to Cmin.
         polarized_preparation_interval: Tuple ``(start, end)`` giving the
             interval during which a polarizing signal is present. During this
             interval, unused and detector lines are set to ``minC`` whereas
@@ -683,6 +686,8 @@ def make_tds_x_anneal_schedules(
             Specified as a dictionary (one per line) or a single value applied
             to all lines. Defaults to min step size permissable
             according to exp_feature_info by line.
+        detected_target_lines: Target lines that are held at non-zero Cmin, 
+            and then read out by the detection process.
 
     Returns:
         A piecewise linear schedule for all lines.
@@ -729,8 +734,9 @@ def make_tds_x_anneal_schedules(
     source_lines = set(source_lines)
     detector_lines = set(detector_lines)
     target_lines = set(target_lines)
-    tds_lines = source_lines | detector_lines | target_lines
-    if len(tds_lines) != len(source_lines) + len(detector_lines) + len(target_lines):
+    detected_target_lines = set(detected_target_lines)
+    tds_lines = source_lines | detector_lines | target_lines | detected_target_lines
+    if len(tds_lines) != len(source_lines) + len(detector_lines) + len(target_lines) +len(detected_target_lines):
         raise ValueError("Source, detector and target lines must be disjoint.")
     if not tds_lines.issubset(all_lines):
         raise ValueError(
@@ -750,7 +756,11 @@ def make_tds_x_anneal_schedules(
         symmetrize_c_bounds=symmetrize_c_bounds,
         standard_01_c_range=use_standard_01_c_range,
     )
-
+    if not isinstance(target_c, dict):
+        if target_c is None:
+            target_c = minCs
+        else:
+            target_c = {line: target_c for line in all_lines}
     times = []
     if len(source_lines) > 0:
         if polarized_preparation_interval is None:
@@ -810,15 +820,12 @@ def make_tds_x_anneal_schedules(
     ]
 
     for line in target_lines:
-        if target_c is None:
-            raise ValueError(
-                f"target_c must be specified for target lines {target_lines}"
-            )
         # Turned slowly to target value:
         anneal_schedules[line] = [
             [depolarized_preparation_interval[0], 0.0],
-            [depolarized_preparation_interval[1], target_c],
+            [depolarized_preparation_interval[1], target_c[line]],
         ]
+
 
     if quench_step_sizes is not None:
         if not isinstance(quench_step_sizes, dict):
@@ -871,6 +878,23 @@ def make_tds_x_anneal_schedules(
             anneal_schedules[line] += [
                 [source_quench_time, maxCs[line]],
                 [source_quench_time + min_time_steps[line], minCs[line]],
+            ]
+    for line in detected_target_lines:
+        # Prepare like a target line, read out like a detector
+        
+        anneal_schedules[line] = [
+            [depolarized_preparation_interval[0], 0.0],
+            [depolarized_preparation_interval[1], target_c[line]],
+            [detector_quench_time, target_c[line]]
+        ]
+        if use_overshoot_detector:
+            anneal_schedules[line] += [
+                [detector_quench_time + min_time_steps[line], maxCOvershoots[line]],
+                [detector_quench_time + 2 * min_time_steps[line], maxCs[line]],
+            ]
+        else:
+            anneal_schedules[line] += [
+                [detector_quench_time + min_time_steps[line], maxCs[line]],
             ]
 
     for line in detector_lines:
@@ -1018,7 +1042,7 @@ def make_tds_x_schedules(
     detector_lines: Iterable[int],
     source_lines: Iterable[int] = tuple(),
     *,
-    target_c: float | None = None,
+    target_c: float | dict[int, float] | None = None,
     post_preparation_delay: float = 20.0,
     depolarization_time_scale: float = 2.0,
     use_common_bounds: bool = False,
@@ -1042,7 +1066,8 @@ def make_tds_x_schedules(
         target_lines: Iterable of target line indices.
         detector_lines: Iterable of detector line indices.
         source_lines: Iterable of source line indices.
-        target_c: Schedule value at which the target is held. target_c must be specified if
+        target_c: Schedule value at which the target is held. Can be a float (applied to all target lines)
+            or a dictionary mapping target line indices to their respective schedule values. target_c must be specified if
             target_lines is not empty.
         post_preparation_delay: Delay in microseconds between completion of
             depolarization and start of depolarized target preparation.
@@ -1136,7 +1161,25 @@ def _target_c_time(
     target_c: float = 0.0,
     decimal_places: int | None = None,
 ):
-    """Assume a linear quench, an idealization of the fast wfms"""
+    """Calculate time at which target_c is realized assuming a linear quench.
+    
+    Over the range C1~0 to C2~1 the quench can be well approximated as linear,
+    whereas for faster quenches it typically deviates. The rate specified in the
+    PWL is typically an overestimate to the rate physically realized through the
+    dynamically relevant [0,1] interval and requires measurement.
+    Small delays to target_c can be realized on a per line basis with
+    x_schedule_delays, or on a per qubit basis with anneal offsets.
+
+    Args:
+        C1: Initial control bias value.
+        C2: Final control bias value.
+        quench_time: Total time for the quench from C1 to C2.
+        target_c: Target control bias value for which to calculate the time.
+        decimal_places: Optional number of decimal places to round the result to.
+
+    Returns:
+        Time at which the target_c is realized under a linear quench.
+    """
     result = (target_c - C1) / (C2 - C1) * quench_time
     if decimal_places is not None:
         result = round(result, decimal_places)

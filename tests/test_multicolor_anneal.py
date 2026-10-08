@@ -21,11 +21,16 @@ import networkx as nx
 from dwave.system import DWaveSampler
 from dwave.system.testing import MockDWaveSampler
 from dwave.experimental.multicolor_anneal import (
-    get_properties, get_solver_name, SOLVER_FILTER,
-    qubit_to_Advantage2_annealing_line, make_tds_graph,
-    make_tds_intervals, make_tds_x_anneal_schedules,
+    get_properties,
+    get_solver_name,
+    SOLVER_FILTER,
+    qubit_to_Advantage2_annealing_line,
+    make_tds_graph,
+    make_tds_intervals,
+    make_tds_x_anneal_schedules,
     make_tds_x_polarizing_schedule,
-    make_tds_x_schedule_delays, make_tds_x_schedules,
+    make_tds_x_schedule_delays,
+    make_tds_x_schedules,
     standardize_schedule_endpoints,
 )
 from dwave.graphs import zephyr_coordinates
@@ -33,13 +38,21 @@ from dwave.graphs import zephyr_coordinates
 
 class PropertiesCheckMixin:
 
-    polarizing_line_properties = ['minPolarizingTimeStep',
-        'depolarizationAnnealScheduleRequiredDelay']
+    polarizing_line_properties = [
+        "minPolarizingTimeStep",
+        "depolarizationAnnealScheduleRequiredDelay",
+    ]
 
     annealing_line_properties = [
-        'annealingLine', 'minAnnealingTimeStep', 'holdOvershootFor',
-        'minCOvershoot', 'maxCOvershoot', 'maxC', 'minC',
-        'scheduleDelayStep', 'qubits'
+        "annealingLine",
+        "minAnnealingTimeStep",
+        "holdOvershootFor",
+        "minCOvershoot",
+        "maxCOvershoot",
+        "maxC",
+        "minC",
+        "scheduleDelayStep",
+        "qubits",
     ]
 
     def validate_exp_feature_info(self, data):
@@ -55,8 +68,8 @@ class PropertiesCheckMixin:
         for i in range(n_lines):
             for p in self.annealing_line_properties:
                 self.assertIn(p, annealing_line_info[i])
-            self.assertEqual(annealing_line_info[i]['annealingLine'], i)
-            self.assertGreater(len(annealing_line_info[i]['qubits']), 0)
+            self.assertEqual(annealing_line_info[i]["annealingLine"], i)
+            self.assertGreater(len(annealing_line_info[i]["qubits"]), 0)
 
 
 class MCA(unittest.TestCase, PropertiesCheckMixin):
@@ -68,24 +81,32 @@ class MCA(unittest.TestCase, PropertiesCheckMixin):
     def test_sampler_properties(self):
         n_lines = 6
         n_qubits = 100
-        polarizing_line_info = {'minPolarizingTimeStep': 0.02,
-                                'depolarizationAnnealScheduleRequiredDelay': 2.0}
-        annealing_line_info = [{'annealingLine': i,
-                 'minAnnealingTimeStep': 0.01,
-                 'depolarizationAnnealScheduleRequiredDelay': 2.0,
-                 'holdOvershootFor': 0.02,
-                 'minCOvershoot': -7.0,
-                 'maxCOvershoot': 8.0,
-                 'maxC': 3.0,
-                 'minC': -2.0,
-                 'scheduleDelayStep': 1e-06,
-                 'qubits': list(range(i*100, (i+1)*100))} for i in range(n_lines)]
+        polarizing_line_info = {
+            "minPolarizingTimeStep": 0.02,
+            "depolarizationAnnealScheduleRequiredDelay": 2.0,
+        }
+        annealing_line_info = [
+            {
+                "annealingLine": i,
+                "minAnnealingTimeStep": 0.01,
+                "depolarizationAnnealScheduleRequiredDelay": 2.0,
+                "holdOvershootFor": 0.02,
+                "minCOvershoot": -7.0,
+                "maxCOvershoot": 8.0,
+                "maxC": 3.0,
+                "minC": -2.0,
+                "scheduleDelayStep": 1e-06,
+                "qubits": list(range(i * 100, (i + 1) * 100)),
+            }
+            for i in range(n_lines)
+        ]
         info = [polarizing_line_info, annealing_line_info]
 
         with unittest.mock.MagicMock() as sampler:
-            sampler.solver.edges = [(0,1)]
-            sampler.solver.sample_qubo.return_value.result.return_value = \
-                dict(x_get_multicolor_annealing_exp_feature_info=info)
+            sampler.solver.edges = [(0, 1)]
+            sampler.solver.sample_qubo.return_value.result.return_value = dict(
+                x_get_multicolor_annealing_exp_feature_info=info
+            )
 
             exp_feature_info = get_properties(sampler)
 
@@ -95,13 +116,14 @@ class MCA(unittest.TestCase, PropertiesCheckMixin):
             self.assertEqual(len(exp_feature_info), 2)
             lines = exp_feature_info[1]
             self.assertEqual(len(lines), n_lines)
-            self.assertTrue(all(lines[i]['annealingLine'] == i for i in range(n_lines)))
-            self.assertTrue(all(len(lines[i]['qubits']) == n_qubits for i in range(n_lines)))
+            self.assertTrue(all(lines[i]["annealingLine"] == i for i in range(n_lines)))
+            self.assertTrue(
+                all(len(lines[i]["qubits"]) == n_qubits for i in range(n_lines))
+            )
 
             self.validate_exp_feature_info(exp_feature_info)
 
-        
-    @unittest.mock.patch('dwave.experimental.fast_reverse_anneal.api.Client')
+    @unittest.mock.patch("dwave.experimental.fast_reverse_anneal.api.Client")
     def test_default_solver_name(self, client):
         class Solver:
             name = "mock-solver"
@@ -122,7 +144,7 @@ class LiveSmokeTests(unittest.TestCase, PropertiesCheckMixin):
         try:
             cls.sampler = DWaveSampler(solver=SOLVER_FILTER)
         except:
-            raise unittest.SkipTest('Multicolor annealing solver not available.')
+            raise unittest.SkipTest("Multicolor annealing solver not available.")
 
     @classmethod
     def tearDownClass(cls):
@@ -153,7 +175,7 @@ class LiveSmokeTests(unittest.TestCase, PropertiesCheckMixin):
                     )
                 )
 
-        
+
 class UtilsTestWithoutClient(unittest.TestCase):
 
     def test_qubit_to_Advantage2_annealing_line(self):
@@ -206,26 +228,33 @@ class UtilsTestWithoutClient(unittest.TestCase):
         self.assertEqual(G.number_of_edges(), 3)
         self.assertEqual(G.number_of_nodes(), 4)
 
-        
     def test_make_tds_x_schedules(self):
-        n_lines = 6 # Must be atleast 3.
+        n_lines = 6  # Must be atleast 3.
         target_c = (random.random() * 100) / 100  # target_c to 2 s.f.
         minCOvershoot = -7.0
         maxCOvershoot = 8.0
-        depolarization_time_scale = 3.0  # Choose as a machine number to avoid precision issues.
+        depolarization_time_scale = (
+            3.0  # Choose as a machine number to avoid precision issues.
+        )
 
-        polarizing_line_info = {'minPolarizingTimeStep': 0.02,
-                                'depolarizationAnnealScheduleRequiredDelay': 2.0}
+        polarizing_line_info = {
+            "minPolarizingTimeStep": 0.02,
+            "depolarizationAnnealScheduleRequiredDelay": 2.0,
+        }
         annealing_line_info = [
-            {'annealingLine': i,
-             'minAnnealingTimeStep': 0.01,
-             'holdOvershootFor': 0.02,
-             'minCOvershoot': minCOvershoot,
-             'maxCOvershoot': maxCOvershoot,
-             'maxC': 3.0,
-             'minC': -2.0,
-             'scheduleDelayStep': 1e-06,
-             'qubits': list(range(i*100, (i+1)*100))} for i in range(n_lines)]
+            {
+                "annealingLine": i,
+                "minAnnealingTimeStep": 0.01,
+                "holdOvershootFor": 0.02,
+                "minCOvershoot": minCOvershoot,
+                "maxCOvershoot": maxCOvershoot,
+                "maxC": 3.0,
+                "minC": -2.0,
+                "scheduleDelayStep": 1e-06,
+                "qubits": list(range(i * 100, (i + 1) * 100)),
+            }
+            for i in range(n_lines)
+        ]
         exp_feature_info = [polarizing_line_info, annealing_line_info]
 
         all_lines = list(range(n_lines))
@@ -284,11 +313,19 @@ class UtilsTestWithoutClient(unittest.TestCase):
                 use_overshoot=False,
             )
             for source_line in source_lines:
-                self.assertNotIn(minCOvershoot, [v for _, v in x_anneal_no_overshoot[source_line]])
-                self.assertNotIn(maxCOvershoot, [v for _, v in x_anneal_no_overshoot[source_line]])
+                self.assertNotIn(
+                    minCOvershoot, [v for _, v in x_anneal_no_overshoot[source_line]]
+                )
+                self.assertNotIn(
+                    maxCOvershoot, [v for _, v in x_anneal_no_overshoot[source_line]]
+                )
             for detector_line in detector_lines:
-                self.assertNotIn(minCOvershoot, [v for _, v in x_anneal_no_overshoot[detector_line]])
-                self.assertNotIn(maxCOvershoot, [v for _, v in x_anneal_no_overshoot[detector_line]])
+                self.assertNotIn(
+                    minCOvershoot, [v for _, v in x_anneal_no_overshoot[detector_line]]
+                )
+                self.assertNotIn(
+                    maxCOvershoot, [v for _, v in x_anneal_no_overshoot[detector_line]]
+                )
 
         with self.subTest(scenario="overshoot_independent"):
             # Overshoot can be enabled on detector lines independently of source.
@@ -343,15 +380,19 @@ class UtilsTestWithoutClient(unittest.TestCase):
     @staticmethod
     def _annealing_line_info(n_lines, min_step=0.01, minC=-2.0, maxC=3.0):
         return [
-            {'annealingLine': i,
-             'minAnnealingTimeStep': min_step,
-             'holdOvershootFor': 0.02,
-             'minCOvershoot': -7.0,
-             'maxCOvershoot': 8.0,
-             'maxC': maxC,
-             'minC': minC,
-             'scheduleDelayStep': 1e-06,
-             'qubits': list(range(i * 100, (i + 1) * 100))} for i in range(n_lines)]
+            {
+                "annealingLine": i,
+                "minAnnealingTimeStep": min_step,
+                "holdOvershootFor": 0.02,
+                "minCOvershoot": -7.0,
+                "maxCOvershoot": 8.0,
+                "maxC": maxC,
+                "minC": minC,
+                "scheduleDelayStep": 1e-06,
+                "qubits": list(range(i * 100, (i + 1) * 100)),
+            }
+            for i in range(n_lines)
+        ]
 
     def test_make_tds_x_anneal_schedules_defaults(self):
         n_lines = 4
@@ -431,22 +472,120 @@ class UtilsTestWithoutClient(unittest.TestCase):
                     quench_step_sizes=min_step / 2,
                 )
 
+    def test_make_tds_x_anneal_schedules_detected_target(self):
+        n_lines = 4
+        min_step = 0.01
+        minC, maxC = -2.0, 3.0
+        minCOvershoot, maxCOvershoot = -7.0, 8.0
+        target_c = 0.5
+        annealing_line_info = self._annealing_line_info(
+            n_lines, min_step=min_step, minC=minC, maxC=maxC
+        )
+
+        def held_value(schedule):
+            # A detected target is ramped up, held flat, then quenched; the held
+            # value is the C reached by two consecutive equal-value points.
+            for (_, c0), (_, c1) in zip(schedule, schedule[1:]):
+                if c0 == c1 and c0 != 0.0:
+                    return c0
+            raise AssertionError("No held value found")
+
+        with self.subTest(scenario="prepared_and_read_out"):
+            schedule = make_tds_x_anneal_schedules(
+                annealing_line_info,
+                detected_target_lines={0},
+                target_c=target_c,
+            )[0]
+            values = [c for _, c in schedule]
+            # Prepared to target_c (held), like a target line.
+            self.assertAlmostEqual(held_value(schedule), target_c)
+            self.assertIn(target_c, values)
+            # Read out (quenched) to maxC, like a detector line.
+            self.assertEqual(schedule[-1][1], maxC)
+
+        with self.subTest(scenario="overshoot_enabled"):
+            schedule = make_tds_x_anneal_schedules(
+                annealing_line_info,
+                detected_target_lines={0},
+                target_c=target_c,
+                use_overshoot=True,
+            )[0]
+            values = [c for _, c in schedule]
+            self.assertIn(maxCOvershoot, values)
+            self.assertEqual(schedule[-1][1], maxC)
+
+        with self.subTest(scenario="overshoot_disabled"):
+            schedule = make_tds_x_anneal_schedules(
+                annealing_line_info,
+                detected_target_lines={0},
+                target_c=target_c,
+                use_overshoot=False,
+            )[0]
+            values = [c for _, c in schedule]
+            self.assertNotIn(maxCOvershoot, values)
+            self.assertNotIn(minCOvershoot, values)
+            self.assertEqual(schedule[-1][1], maxC)
+
+        with self.subTest(scenario="default_target_c_is_minC"):
+            # Without target_c, detected targets are held at minC.
+            schedule = make_tds_x_anneal_schedules(
+                annealing_line_info,
+                detected_target_lines={0},
+            )[0]
+            self.assertAlmostEqual(held_value(schedule), minC)
+
+        with self.subTest(scenario="per_line_target_c"):
+            # target_c may vary by line.
+            per_line_c = {0: 0.25, 1: -0.5}
+            schedules = make_tds_x_anneal_schedules(
+                annealing_line_info,
+                detected_target_lines={0, 1},
+                target_c=per_line_c,
+            )
+            self.assertAlmostEqual(held_value(schedules[0]), per_line_c[0])
+            self.assertAlmostEqual(held_value(schedules[1]), per_line_c[1])
+
+        with self.subTest(scenario="disjoint_roles_required"):
+            # A line cannot be both a detected target and another role.
+            for conflicting in ("detector_lines", "target_lines", "source_lines"):
+                with self.assertRaises(ValueError):
+                    make_tds_x_anneal_schedules(
+                        annealing_line_info,
+                        detected_target_lines={0},
+                        target_c=target_c,
+                        **{conflicting: {0}},
+                    )
+
+        with self.subTest(scenario="invalid_line_index"):
+            with self.assertRaises(ValueError):
+                make_tds_x_anneal_schedules(
+                    annealing_line_info,
+                    detected_target_lines={n_lines},
+                    target_c=target_c,
+                )
+
     def test_make_tds_x_schedules_empty_lines(self):
         n_lines = 6  # Must be at least 3.
         target_c = (random.random() * 100) / 100  # target_c to 2 s.f.
 
-        polarizing_line_info = {'minPolarizingTimeStep': 0.02,
-                                'depolarizationAnnealScheduleRequiredDelay': 2.0}
+        polarizing_line_info = {
+            "minPolarizingTimeStep": 0.02,
+            "depolarizationAnnealScheduleRequiredDelay": 2.0,
+        }
         annealing_line_info = [
-            {'annealingLine': i,
-             'minAnnealingTimeStep': 0.01,
-             'holdOvershootFor': 0.02,
-             'minCOvershoot': -7.0,
-             'maxCOvershoot': 8.0,
-             'maxC': 3.0,
-             'minC': -2.0,
-             'scheduleDelayStep': 1e-06,
-             'qubits': list(range(i*100, (i+1)*100))} for i in range(n_lines)]
+            {
+                "annealingLine": i,
+                "minAnnealingTimeStep": 0.01,
+                "holdOvershootFor": 0.02,
+                "minCOvershoot": -7.0,
+                "maxCOvershoot": 8.0,
+                "maxC": 3.0,
+                "minC": -2.0,
+                "scheduleDelayStep": 1e-06,
+                "qubits": list(range(i * 100, (i + 1) * 100)),
+            }
+            for i in range(n_lines)
+        ]
         exp_feature_info = [polarizing_line_info, annealing_line_info]
 
         all_lines = set(range(n_lines))
@@ -591,7 +730,7 @@ class UtilsTestWithoutClient(unittest.TestCase):
             quenched_lines=quenched_lines,
             target_c=0.0,
             x_schedule_delays=initial,
-            )
+        )
         self.assertAlmostEqual(delays[0], -0.5)
         self.assertAlmostEqual(delays[1], -0.5)
         self.assertEqual(delays[2], 9.0)
