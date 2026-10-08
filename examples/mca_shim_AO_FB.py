@@ -819,7 +819,7 @@ def estimate_decoupling_timescale(
     by_det_src_pair: bool = True,
     line_assignments: dict[int, int] | None = None,
     source_lines: Iterable[int] | None = None,
-) -> tuple[dict[int, float], list]:
+) -> tuple[dict[int, float], list, dict[int, float]]:
     """Estimate bulk decoupling timescales
 
     Source and detector waveforms typically overlap, in order that the detection
@@ -841,7 +841,7 @@ def estimate_decoupling_timescale(
     It would be more natural to coarsely synchronize, align target frequencies,
     and then refine the line-wise synchonization and finally use per-qubit
     anneal_offsets approximating some c(t) on source and detectors. A linear
-    approximation assuming a common dc/dt may be sufficient.
+    approximation assuming a common dc/dt and per-qubit-delays may be sufficient.
 
     Args:
         sampler: Parallel embedding composite sampler wrapping the QPU sampler.
@@ -883,7 +883,13 @@ def estimate_decoupling_timescale(
           lines are present). With more than one source line, each source line also
           maps to a delay relative to the reference source line (reference -> 0.0).
           With by_det_src_pair=False a single bulk estimate is repeated for each detector line.
+          Each delay is refined past the bisection bracket by linearly interpolating
+          the half-cycle-averaged proxy to its threshold crossing.
         - A list of (delay, mag) pairs representing the decoupling timescale search data.
+        - A dict of detected (detector) qubit -> decoupling time, estimated
+          per qubit by linearly interpolating the two sampled points (one either side)
+          nearest the half-cycle-averaged proxy threshold. Qubits without sampled points
+          bracketing the threshold are omitted.
     """
     detector_lines = list(detector_lines)
     half_cycle = 1 / target_A / 2.0
@@ -948,12 +954,64 @@ def estimate_decoupling_timescale(
                     t_max = t_guess - half_cycle
                 else:
                     t_min = t_guess
-        return t_guess
+
+        # Refine within the final bracket: linearly interpolate the smooth
+        # half-cycle-averaged proxy to the time where it crosses the threshold.
+        def _proxy(delay):
+            return (
+                preparation_orientation
+                / 2
+                * np.median(vec(delay) + vec(delay - half_cycle))
+            )
+
+        s_min = _proxy(t_min)
+        s_max = _proxy(t_max)
+        if s_min == s_max:
+            return t_guess
+        frac = (s_min - threshold_cycle_av) / (s_min - s_max)
+        frac = min(max(frac, 0.0), 1.0)
+        return t_min + frac * (t_max - t_min)
+
+    def _per_qubit_threshold_times():
+        """Per-qubit threshold crossing time from a linear fit of the two
+        sampled points (one either side) nearest the smooth half-cycle proxy
+        threshold. Keyed by each embedding's detected (detector) qubit."""
+        # Only delays with a half-cycle companion let the proxy be formed.
+        paired_delays = sorted(t for t in cache if (t - half_cycle) in cache)
+        threshold_times = {}
+        for i, emb in enumerate(sampler.embeddings):
+            qubit = emb[("detector", 0)][0]
+            points = [
+                (
+                    t,
+                    preparation_orientation
+                    / 2
+                    * (cache[t][i] + cache[t - half_cycle][i]),
+                )
+                for t in paired_delays
+            ]
+            above = [(t, p) for t, p in points if p >= threshold_cycle_av]
+            below = [(t, p) for t, p in points if p < threshold_cycle_av]
+            if not above or not below:
+                continue
+            # Nearest point to the threshold from each side brackets the crossing.
+            ta, pa = min(above, key=lambda tp: tp[1])
+            tb, pb = max(below, key=lambda tp: tp[1])
+            if pa == pb:
+                continue
+            threshold_times[qubit] = ta + (tb - ta) * (pa - threshold_cycle_av) / (
+                pa - pb
+            )
+        return threshold_times
 
     if not by_det_src_pair:
         # Non-default: a single bulk delay from the median over all detector lines.
         t_bulk = _search(_measure, t_guess, t_min, t_max)
-        return {line: t_bulk for line in detector_lines}, data
+        return (
+            {line: t_bulk for line in detector_lines},
+            data,
+            _per_qubit_threshold_times(),
+        )
 
     if line_assignments is None:
         raise ValueError("line_assignments is required when by_det_src_pair=True")
@@ -1000,7 +1058,7 @@ def estimate_decoupling_timescale(
                 f"source line {source_line} on reference detector line {reference_detector}",
             )
 
-    return t_decoupled, data
+    return t_decoupled, data, _per_qubit_threshold_times()
 
 
 def _to_independent_tds(embs):
@@ -1616,19 +1674,13 @@ def main(
             "Larmor precession proceeds from the point where decoupling occurs; "
             "determine this processor- and anneal-schedule-specific value."
         )
-        if len(source_lines) > 1:
-            print(
-                "Multiple source lines detected. Detector decoupling delays are resolved using the "
-                "reference (first) source line; each additional source line is assigned a relative "
-                "delay measured on the reference detector line."
-            )
 
         fn_cache = f"cache/source_decoupling_{cache_str}.pkl"
         if cache_str and os.path.isfile(fn_cache):
             with open(fn_cache, "rb") as f:
-                t_decoupled, t_mags = pickle.load(f)
+                t_decoupled, t_mags, t_decoupled_by_qubit = pickle.load(f)
         else:
-            t_decoupled, t_mags = estimate_decoupling_timescale(
+            t_decoupled, t_mags, t_decoupled_by_qubit = estimate_decoupling_timescale(
                 sampler=sampler,
                 bqm=bqm,
                 sampling_params=sampling_params,
@@ -1640,7 +1692,15 @@ def main(
             )
             if cache_str:
                 with open(fn_cache, "wb") as f:
-                    pickle.dump((t_decoupled, t_mags), f)
+                    pickle.dump((t_decoupled, t_mags, t_decoupled_by_qubit), f)
+
+        plt.figure('Per-qubit delays')
+        num_estimated = len(t_decoupled_by_qubit)
+        plt.plot(sorted(t_decoupled_by_qubit.values()), np.arange(num_estimated)/num_estimated)
+        plt.xlabel('Per-detected qubit decoupling time, us')
+        plt.ylabel(f'Cumulative Distribution Function')
+        plt.title(f'Linear interpolation estimates for {num_estimated} of {len(sampler.embeddings)} cases')
+
         delays_arr = np.array([t for t, _ in t_mags])
         mags_arr = np.array([mag for _, mag in t_mags])
         if len(source_lines) == 1 and len(detector_lines) == 1:
