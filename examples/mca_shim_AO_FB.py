@@ -365,8 +365,9 @@ def run_parallel_experiment(
     sampler: ParallelEmbeddingComposite,
     bqm: dimod.BinaryQuadraticModel,
     sampling_params: dict,
-    delays: np.ndarray | list,
     detector_lines: Iterable[int],
+    *,
+    delays: np.ndarray | list = (0.0,),
     detected_vars: None | Sequence[Variable] = None,
 ) -> np.ndarray:
     """Collect detector magnetization for a set of independent embeddings
@@ -814,11 +815,12 @@ def estimate_decoupling_timescale(
     target_A: float = 2000,
     T2: float = 0.0101,
     threshold_cycle_av: float = 0.9,
-    phase_accuracy: float | None = None,
+    phase_accuracy: float = 1.0,
     verbose: bool = False,
     by_det_src_pair: bool = True,
     line_assignments: dict[int, int] | None = None,
     source_lines: Iterable[int] | None = None,
+    interpolate_final_interval: bool = False,
 ) -> tuple[dict[int, float], list, dict[int, float]]:
     """Estimate bulk decoupling timescales
 
@@ -895,11 +897,6 @@ def estimate_decoupling_timescale(
     half_cycle = 1 / target_A / 2.0
     data = []
     cache = {}
-    if phase_accuracy is None:
-        if len(source_lines) == 1 and len(detector_lines) == 1:
-            phase_accuracy = 1.0
-        else:
-            phase_accuracy = 0.025
 
     def _measure(delay):
         """Sample per-embedding detector magnetization, reusing cached delays."""
@@ -908,8 +905,8 @@ def estimate_decoupling_timescale(
                 sampler=sampler,
                 bqm=bqm,
                 sampling_params=sampling_params,
-                delays=[delay],
                 detector_lines=detector_lines,
+                delays=[delay],
                 detected_vars=detected_vars,
             )
             cache[delay] = mag[0, :]
@@ -924,6 +921,10 @@ def estimate_decoupling_timescale(
             v = vec(t_guess)
             if np.median(v) * preparation_orientation < threshold_cycle_av:
                 t_max = t_guess
+                if interpolate_final_interval:
+                    # Cache the half-cycle companion so this delay can pair and
+                    # seed the per-line/per-qubit interpolating estimators.
+                    vec(t_guess - half_cycle)
                 t_guess -= T2
             else:
                 v_half = vec(t_guess - half_cycle)
@@ -945,6 +946,10 @@ def estimate_decoupling_timescale(
             v = vec(t_guess)
             if np.median(v) * preparation_orientation < threshold_cycle_av:
                 t_max = t_guess
+                if interpolate_final_interval:
+                    # Cache the half-cycle companion so this delay can pair and
+                    # seed the per-line/per-qubit interpolating estimators.
+                    vec(t_guess - half_cycle)
             else:
                 v_half = vec(t_guess - half_cycle)
                 if (
@@ -955,22 +960,26 @@ def estimate_decoupling_timescale(
                 else:
                     t_min = t_guess
 
-        # Refine within the final bracket: linearly interpolate the smooth
-        # half-cycle-averaged proxy to the time where it crosses the threshold.
-        def _proxy(delay):
-            return (
-                preparation_orientation
-                / 2
-                * np.median(vec(delay) + vec(delay - half_cycle))
-            )
+        if interpolate_final_interval:
+            # Refine within the final bracket: linearly interpolate the smooth
+            # half-cycle-averaged proxy to the time where it crosses the threshold.
 
-        s_min = _proxy(t_min)
-        s_max = _proxy(t_max)
-        if s_min == s_max:
+            def _proxy(delay):
+                return (
+                    preparation_orientation
+                    / 2
+                    * np.median(vec(delay) + vec(delay - half_cycle))
+                )
+
+            s_min = _proxy(t_min)
+            s_max = _proxy(t_max)
+            if s_min == s_max:
+                return t_guess
+            frac = (s_min - threshold_cycle_av) / (s_min - s_max)
+            frac = min(max(frac, 0.0), 1.0)
+            return t_min + frac * (t_max - t_min)
+        else:
             return t_guess
-        frac = (s_min - threshold_cycle_av) / (s_min - s_max)
-        frac = min(max(frac, 0.0), 1.0)
-        return t_min + frac * (t_max - t_min)
 
     def _per_qubit_threshold_times():
         """Per-qubit threshold crossing time from a linear fit of the two
@@ -978,6 +987,7 @@ def estimate_decoupling_timescale(
         threshold. Keyed by each embedding's detected (detector) qubit."""
         # Only delays with a half-cycle companion let the proxy be formed.
         paired_delays = sorted(t for t in cache if (t - half_cycle) in cache)
+        print(paired_delays)
         threshold_times = {}
         for i, emb in enumerate(sampler.embeddings):
             qubit = emb[("detector", 0)][0]
@@ -1108,6 +1118,8 @@ def main(
     embedding_timeout: int = 60,
     colormap_type: Literal["divergent", "default"] = "divergent",
     dt_div_A_final: float = 0.25,
+    refine_delays: bool = True,
+    dt_dc: float = 2.3e-3,
 ) -> None:
     """Demonstrate T-D-S variability and mitigation strategies.
 
@@ -1222,6 +1234,11 @@ def main(
         dt_div_A_final: Sampling rate for the final (loop) experiment. Defaults
             to the same value used in anneal_offset shimming (1/4), smaller values
             can be used for pretty plots.
+        dt_dc: Decoupling time change as a function of anneal offset. This is primarily
+            anneal_schedule (quench C-interval and rate) dependent. For the default
+            overshoot waveform on Advantage2 processors dt_dc ~ 2.3ns.
+            A correction is applied using dt_dc = 2.3ns, data recollected, and the final
+            anneal offset applied using a corrected model.
     Raises:
         ValueError: If the fit window (``delay_min_fit``, ``delay_max_fit``)
             is incompatible with the data window (``delay_min``, ``delay_max``)
@@ -1600,7 +1617,9 @@ def main(
     if td_shim_type != "None":
         stage_idx += 1
         print()
-        print(f"Stage {stage_idx}: Refine flux_biases")
+        print(
+            f"Stage {stage_idx}: Compensate for static qubit body cross talks (via flux_biases)"
+        )
 
         fn_cache = f"cache/FB_{cache_str}.npy"
         if cache_str and os.path.isfile(fn_cache):
@@ -1694,12 +1713,12 @@ def main(
                 with open(fn_cache, "wb") as f:
                     pickle.dump((t_decoupled, t_mags, t_decoupled_by_qubit), f)
 
-        plt.figure('Per-qubit delays')
-        num_estimated = len(t_decoupled_by_qubit)
-        plt.plot(sorted(t_decoupled_by_qubit.values()), np.arange(num_estimated)/num_estimated)
-        plt.xlabel('Per-detected qubit decoupling time, us')
-        plt.ylabel(f'Cumulative Distribution Function')
-        plt.title(f'Linear interpolation estimates for {num_estimated} of {len(sampler.embeddings)} cases')
+        # plt.figure('Per-qubit delays')
+        # num_estimated = len(t_decoupled_by_qubit)
+        # plt.plot(sorted(t_decoupled_by_qubit.values()), np.arange(num_estimated)/num_estimated)
+        # plt.xlabel('Per-detected qubit decoupling time, us')
+        # plt.ylabel(f'Cumulative Distribution Function')
+        # plt.title(f'Linear interpolation estimates for {num_estimated} of {len(sampler.embeddings)} cases')
 
         delays_arr = np.array([t for t, _ in t_mags])
         mags_arr = np.array([mag for _, mag in t_mags])
@@ -1776,14 +1795,15 @@ def main(
             ax_after.set_xlabel("Time (t + source_delay - detector_delay)")
             ax_after.set_title("Source Decoupling (delay-aligned)")
             ax_after.legend()
-        if save_figures:
-            _save_open_figures("figures/", cache_str)
-        print("Close figures to proceed to next stages.")
-        _apply_tight_layout()
+
         print(
             "Detected decoupling times by detector line (or relative offset required on source line)",
             t_decoupled,
         )
+        if save_figures:
+            _save_open_figures("figures/", cache_str)
+        print("Close figures to proceed to next stages.")
+        _apply_tight_layout()
         plt.show()
     else:
         # A user-provided scalar delay applies to all detector lines.
@@ -1793,14 +1813,13 @@ def main(
     # errors, but (IMO) allows intuitive estimators and data series.
     # Nyquist frequency in MHz, resolving up to 2*target_A.
 
-    nyquist_frequency = target_A * 1000 * 2
     for line, val in t_decoupled.items():
-        sampling_params["x_schedule_delays"][line] = val
+        sampling_params["x_schedule_delays"][line] += val
 
-    delay_min_fit = delay_min = 1 / (
-        target_A * 1000
-    )  # Ignore first cycle, which is subject to transient source interference.
-
+    nyquist_frequency = target_A * 1000 * 2
+    delay_min_fit = delay_min = (
+        dt_dc  # For reasonable confidence source is fully decoupled (c < 0).
+    )
     delay_max_fit = delay_max = delay_min + T2
 
     delays = np.linspace(
@@ -1813,7 +1832,9 @@ def main(
     if num_anneal_offset_iterations > 0:
         stage_idx += 1
         print()
-        print(f"Stage {stage_idx}: Anneal offset refinement")
+        print(
+            f"Stage {stage_idx}: target frequency refinement (via target anneal offset)"
+        )
         print(
             "Collecting data in the interval ~[0, T2] at a rate close to twice the Nyquist frequency. "
             "This allows the power-spectral density to be estimated in good agreement with a Lorentzian. "
@@ -1945,7 +1966,7 @@ def main(
                 raise RuntimeError("QPU not available, and no cached data found.")
 
             mean_Z_detector = run_parallel_experiment(
-                sampler, bqm, sampling_params, delays, detector_lines
+                sampler, bqm, sampling_params, detector_lines, delays=delays
             )
             if cache_str:
                 np.save(fn_cache, mean_Z_detector)
@@ -2037,7 +2058,7 @@ def main(
         ax_first_iter_psd.legend()
 
         # Calculate anneal_offsets for synchronization
-        anneal_offsets = y = _calc_anneal_offsets(
+        anneal_offsets_target = y = _calc_anneal_offsets(
             frequencies, psd, target_A, dAdc
         )  # Per embedding
         # anneal offsets can be realized line-wise by changing target_c,
@@ -2061,11 +2082,180 @@ def main(
             _apply_tight_layout()
             plt.show()
 
-    if num_anneal_offset_iterations > 1:
-        anneal_offsets0 = anneal_offsets
+    if refine_delays:
+        # Repeat the source-decoupling detection; the outcome differs because
+        # of the updated anneal_offsets on the targets.
+        stage_idx += 1
         print()
         print(
-            f"Stage {stage_idx}c: Apply second iterative stage (and demonstrate improvements in target_A homogeneity)."
+            f"Stage {stage_idx}: Refine source and detector delays (with x_schedule_delays and detector anneal_offsets)"
+        )
+        print(
+            "We first reestablish decoupling time to high accuracy (now subject) to"
+            " some improved target frequency alignmment on a plurality of qubits."
+        )
+
+        fn_cache = f"cache/source_decoupling_refined_{cache_str}.pkl"
+        if cache_str and os.path.isfile(fn_cache):
+            with open(fn_cache, "rb") as f:
+                t_decoupled, t_mags, t_decoupled_by_qubit = pickle.load(f)
+        else:
+            t_decoupled, t_mags, t_decoupled_by_qubit = estimate_decoupling_timescale(
+                sampler=sampler,
+                bqm=bqm,
+                sampling_params=sampling_params,
+                detector_lines=detector_lines,
+                target_A=target_A * 1000,
+                line_assignments=line_assignments,
+                source_lines=source_lines,
+                by_det_src_pair=by_det_src_pair,
+                phase_accuracy=0.05,
+                interpolate_final_interval=True,
+                t_min=-2 / target_A / 1000,
+                t_max=4 / target_A / 1000,
+            )
+            if cache_str:
+                with open(fn_cache, "wb") as f:
+                    pickle.dump((t_decoupled, t_mags, t_decoupled_by_qubit), f)
+
+        plt.figure("Per-qubit delays")
+        num_estimated = len(t_decoupled_by_qubit)
+        plt.plot(
+            sorted(t_decoupled_by_qubit.values()),
+            np.arange(num_estimated) / num_estimated,
+        )
+        plt.xlabel("Per-detected qubit decoupling time, us")
+        plt.ylabel(f"Cumulative Distribution Function")
+        plt.title(
+            f"Linear interpolation estimates for {num_estimated} of {len(sampler.embeddings)} cases"
+        )
+
+        delays_arr = np.array([t for t, _ in t_mags])
+        mags_arr = np.array([mag for _, mag in t_mags])
+        plt.figure("per_qubit_decoupling")
+        plt.plot(
+            delays_arr,
+            mags_arr,
+            linestyle="None",
+            marker=".",
+        )
+        plt.xlabel("Time, us")
+        plt.ylabel("Magnitude")
+        plt.title("Source Decoupling Detection")
+
+        print(
+            "Detected decoupling times by detector line (or relative offset required on source line)",
+            t_decoupled,
+        )
+        print("We refine the offset per line")
+        for line, val in t_decoupled.items():
+            sampling_params["x_schedule_delays"][line] += val
+        print(
+            f"Collect data assuming dt_dc={dt_dc}, but reestimate for final correction."
+        )
+
+        print(
+            "We refine the anneal offset on detectors to mitigate for remaining per-qubit variation. "
+            "c(t)=anneal_offset(t) is to a good approximation linear, assuming "
+            f"dt/dc(t) ~ {dt_dc}us we can correct a measured delay in one step."
+        )
+        mags_t0 = [
+            run_parallel_experiment(
+                sampler, bqm, sampling_params, detector_lines
+            ).ravel()
+        ]
+        if len(source_lines) == 1:
+            t_decoupled[source_lines[0]] = 0.0
+        for emb in embs:
+            det_q = emb[("detector", 0)][0]
+            src_q = emb[("source", 0)][0]
+            if det_q in t_decoupled_by_qubit:
+                t_decoupled_by_qubit[det_q] -= (
+                    t_decoupled[line_assignments[det_q]]
+                    - t_decoupled[line_assignments[src_q]]
+                )
+            # Residual part, not captured by line-wise correction.
+
+        mags_t0.append(
+            run_parallel_experiment(
+                sampler, bqm, sampling_params, detector_lines
+            ).ravel()
+        )
+        relative_offset = np.mean(list(t_decoupled_by_qubit.values()))
+        for emb in embs:
+            det_q = emb[("detector", 0)][0]
+            if det_q in t_decoupled_by_qubit:
+                # TO DO - split evenly with src makes a bit more sense.
+                det_q = emb[("detector", 0)][0]
+                sampling_params["anneal_offsets"][det_q] = (
+                    -(t_decoupled_by_qubit[det_q] - relative_offset) / dt_dc
+                )
+        mags_t0.append(
+            run_parallel_experiment(
+                sampler, bqm, sampling_params, detector_lines
+            ).ravel()
+        )
+        plt.figure("Mags with/without synchronization")
+        num_points = len(mags_t0[0])
+        inter_quartiles = [np.diff(np.percentile(mags, [25, 75])) for mags in mags_t0]
+        plt.plot(
+            sorted(mags_t0[0]),
+            np.arange(num_points) / num_points,
+            label=f"Coarse x_schedule_delays (IQD={inter_quartiles[0]})",
+        )
+        plt.plot(
+            sorted(mags_t0[1]),
+            np.arange(num_points) / num_points,
+            label=f"Refined x_schedule_delays (IQD={inter_quartiles[1]})",
+        )
+        plt.plot(
+            sorted(mags_t0[2]),
+            np.arange(num_points) / num_points,
+            label=f"with additional anneal_offsets (IQD={inter_quartiles[2]})",
+        )
+        plt.xlabel("Magnetization at delay 0.")
+        plt.ylabel("Cumulative distribution function")
+        plt.legend()
+        # Low data scenario, a bulk measure is safer since variability by qubit
+        # is expected to be small.
+        # Column i of each mags_t0 array corresponds to embs[i]; group by the
+        # (source line, detector line) pair so dt_dc is reestimated per combination.
+        emb_src_lines = np.array(
+            [line_assignments[emb[("source", 0)][0]] for emb in embs]
+        )
+        emb_det_lines = np.array(
+            [line_assignments[emb[("detector", 0)][0]] for emb in embs]
+        )
+        dt_dc_new = {}
+        for src, det in sorted(
+            set(zip(emb_src_lines.tolist(), emb_det_lines.tolist()))
+        ):
+            mask = (emb_src_lines == src) & (emb_det_lines == det)
+            m_base = mags_t0[1][mask]
+            dt_dc_new[(src, det)] = (
+                np.median(np.abs(m_base - np.mean(m_base)))
+                / np.median(np.abs(m_base - mags_t0[2][mask]))
+                * dt_dc
+            )
+        dt_dc_bulk = (
+            np.median(np.abs(mags_t0[1] - np.mean(mags_t0[1])))
+            / np.median(np.abs(mags_t0[1] - mags_t0[2]))
+            * dt_dc
+        )
+        for emb in embs:
+            det_q = emb[("detector", 0)][0]
+            sampling_params["anneal_offsets"][det_q] *= dt_dc / dt_dc_bulk
+        print("Improved estimation of dt_dc ", dt_dc_bulk, " used value ", dt_dc)
+        print(
+            "Broken down by (source line, detector line) - note that data defaults may be too sparse for variation to be considered significant: ",
+            dt_dc_new,
+        )
+
+    if num_anneal_offset_iterations > 1:
+        anneal_offsets0_target = anneal_offsets_target
+        print()
+        print(
+            f"Stage {stage_idx}: Verification (after anneal offsets for delay and frequency homogenization)."
         )
         fn_cache = f"cache/AO_It1_{cache_str}.npy"
         if cache_str and os.path.isfile(fn_cache):
@@ -2073,12 +2263,12 @@ def main(
         else:
             if not online:
                 raise RuntimeError("QPU not available, and no cached data found.")
-            for emb, ao in zip(embs, anneal_offsets):
+            for emb, ao in zip(embs, anneal_offsets_target):
                 sampling_params["anneal_offsets"][
                     emb[0][0]
                 ] -= ao  # Apply correction to target on each embedding
             mean_Z_detector = run_parallel_experiment(
-                sampler, bqm, sampling_params, delays, detector_lines
+                sampler, bqm, sampling_params, detector_lines, delays=delays
             )
             if cache_str:
                 np.save(fn_cache, mean_Z_detector)
@@ -2088,20 +2278,20 @@ def main(
                 for i in range(len(embs))
             ]
         ) / (last - first)
-        y = anneal_offsets = _calc_anneal_offsets(
+        y = anneal_offsets_target = _calc_anneal_offsets(
             frequencies, psd, target_A, dAdc
         )  # Per embedding
 
-        for emb, ao in zip(embs, anneal_offsets):
+        for emb, ao in zip(embs, anneal_offsets_target):
             sampling_params["anneal_offsets"][
                 emb[0][0]
             ] -= ao  # Apply correction to target on each embedding
 
         plt.figure("Proposed anneal_offsets")
         plt.plot(
-            sorted(y),
-            np.arange(len(y)) / len(y),
-            label=f"RMS(It=2)={np.sqrt(np.mean(np.array(y)**2)):.3g}",
+            sorted(anneal_offsets_target),
+            np.arange(len(anneal_offsets_target)) / len(anneal_offsets_target),
+            label=f"RMS(It=2)={np.sqrt(np.mean(np.array(anneal_offsets_target)**2)):.3g}",
         )
         plt.legend()
 
@@ -2156,8 +2346,8 @@ def main(
             else:
                 label = None
             plt.plot(
-                anneal_offsets0[emb_idx],
-                anneal_offsets[emb_idx],
+                anneal_offsets0_target[emb_idx],
+                anneal_offsets_target[emb_idx],
                 color=line_color[line_target],
                 marker="x",
                 label=label,
@@ -2233,8 +2423,8 @@ def main(
                 sampler_experiment,
                 bqm_experiment,
                 sampling_params,
-                delays,
                 detector_lines,
+                delays=delays,
             )
             if cache_str:
                 np.save(fn_cache, mean_Z_detector)
@@ -2441,6 +2631,14 @@ if __name__ == "__main__":
         action="store_false",
         help="Disable saving figures to figures/ folder with hash-based names.",
     )
+    parser.add_argument(
+        "--no-refine-delays",
+        dest="refine_delays",
+        action="store_false",
+        default=True,
+        help="Repeat source-decoupling delay detection after anneal-offset refinement, "
+        "This is then applied to synchonize detector/sources on a per qubit basis.",
+    )
 
     args = parser.parse_args()
     if args.use_cache:
@@ -2467,4 +2665,5 @@ if __name__ == "__main__":
         Jtt=args.Jtt,
         loop_length=args.loop_length,
         max_num_embeddings=args.max_num_embeddings,
+        refine_delays=args.refine_delays,
     )
