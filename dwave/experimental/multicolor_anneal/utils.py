@@ -27,6 +27,10 @@ from dwave.graphs import zephyr_coordinates
 __all__ = [
     "ScheduleError",
     "ExpFeatureInfo",
+    "Interval",
+    "LineFeatureInfo",
+    "AnnealSchedule",
+    "XAnnealSchedules",
     "qubit_to_Advantage2_annealing_line",
     "line_assignments_from_feature_info",
     "make_tds_graph",
